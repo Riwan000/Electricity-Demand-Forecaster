@@ -54,7 +54,7 @@ Full datasets available from the sources above (see `data/README.md`).
 
 ## 📈 Results
 
-* Best model: **Random Forest (with log-transform)**
+* Best model: **XG Boost (with log-transform)**
 * Final metrics (test set):
 
   * MAE = **2.18**
@@ -71,29 +71,6 @@ Full datasets available from the sources above (see `data/README.md`).
 **Key Insight**:
 Extreme heat events were the **main cause of forecast errors**.
 Future improvements should focus on **multi-day heatwave modeling** (lags, CDD variations).
-
----
-
-## 📂 Repo Structure
-
-```
-notebooks/    → Jupyter notebooks (EDA, feature engineering, modeling)
-data/         → Sample dataset + source README
-results/      → Figures, metrics, residual plots
-scripts/      → Reusable Python scripts
-models/       → Saved baseline and tuned models (Pickle)
-```
-
----
-
-## 🚀 How to Run
-
-```bash
-git clone https://github.com/<your-username>/smart-energy-forecasting.git
-cd smart-energy-forecasting
-pip install -r requirements.txt
-jupyter notebook
-```
 
 ---
 
