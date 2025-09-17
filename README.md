@@ -25,8 +25,8 @@ Stage 1 focuses on **forecasting electricity demand at the state/national level*
 * Electricity: maximum demand met, shortages, energy met (MU), state-wise generation.
 * Flags: Major holidays, extreme heat events.
 
-📂 `data/sample_data.csv` → contains a **5,000-row sample** for quick experiments.
-Full datasets available from the sources above (see `data/README.md`).
+📂 `sample_cleaned_dataset.csv` → contains a **100-row sample** for quick experiments.
+Full datasets available from the sources above.
 
 ---
 
