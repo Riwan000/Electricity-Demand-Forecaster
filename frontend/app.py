@@ -103,9 +103,12 @@ def load_model():
     """
     # Try multiple possible model paths
     possible_paths = [
-        '../xgb1_model.pkl',  # From frontend directory
-        'xgb1_model.pkl',      # From root directory
-        '../models/xgb1_model.pkl'  # If models folder exists
+        #'../xgb1_model.pkl',  # From frontend directory
+        #'xgb1_model.pkl',      # From root directory
+        #'../models/xgb1_model.pkl',  # If models folder exists
+        '../xgb2_model.pkl',  # From frontend directory
+        'xgb2_model.pkl',      # From root directory
+        '../models/xgb2_model.pkl'
     ]
     
     for model_path in possible_paths:
@@ -237,17 +240,24 @@ def get_weather_forecast_openmeteo(state_name, start_date, num_days):
         url = "https://api.open-meteo.com/v1/forecast"
         
         # API parameters - requesting all weather variables needed by the model
-        # Open-Meteo API expects daily as a comma-separated string, not a list
-        params = {
+        # Open-Meteo API expects daily as comma-separated string
+        # Note: temperature_2m_mean is not available, we'll calculate it from max/min
+        # Note: dewpoint_2m should be dewpoint_2m_mean
+        daily_params = "temperature_2m_max,temperature_2m_min,dewpoint_2m_mean,windspeed_10m_max,winddirection_10m_dominant,shortwave_radiation_sum,cloudcover_mean"
+        
+        # Build query string manually to control encoding
+        from urllib.parse import urlencode, quote
+        base_params = {
             "latitude": lat,
             "longitude": lon,
-            "daily": "temperature_2m_max,temperature_2m_min,temperature_2m_mean,dewpoint_2m,windspeed_10m_max,winddirection_10m_dominant,shortwave_radiation_sum,cloudcover_mean",
             "forecast_days": num_days,
-            "timezone": "Asia/Kolkata"      # Indian Standard Time
+            "timezone": "Asia/Kolkata"
         }
+        query_parts = [urlencode(base_params), f"daily={daily_params}"]
+        full_url = f"{url}?{'&'.join(query_parts)}"
         
         # Make API request with timeout
-        response = requests.get(url, params=params, timeout=10)
+        response = requests.get(full_url, timeout=10)
         response.raise_for_status()  # Raise exception for bad status codes
         data = response.json()
         
@@ -257,17 +267,17 @@ def get_weather_forecast_openmeteo(state_name, start_date, num_days):
         daily_data = data["daily"]
         
         # Convert API response to DataFrame matching model's expected format
+        # Calculate temperature mean from max and min (API doesn't provide mean directly)
+        temp_mean = [(max + min) / 2 for max, min in zip(
+            daily_data["temperature_2m_max"], 
+            daily_data["temperature_2m_min"]
+        )]
+        
         forecast_df = pd.DataFrame({
             "date": pd.to_datetime(daily_data["time"]),
             "2m_temperature_max": daily_data["temperature_2m_max"],
             "2m_temperature_min": daily_data["temperature_2m_min"],
-            "2m_temperature_mean": daily_data.get("temperature_2m_mean", 
-                # Calculate mean if not provided
-                [(max + min) / 2 for max, min in zip(
-                    daily_data["temperature_2m_max"], 
-                    daily_data["temperature_2m_min"]
-                )]
-            ),
+            "2m_temperature_mean": temp_mean,
         })
         
         # Convert temperatures from Celsius to Kelvin
@@ -277,10 +287,11 @@ def get_weather_forecast_openmeteo(state_name, start_date, num_days):
         forecast_df["2m_temperature_mean"] = forecast_df["2m_temperature_mean"] + 273.15
         
         # Add dewpoint (convert to Kelvin if needed)
-        if "dewpoint_2m" in daily_data:
+        # API provides dewpoint_2m_mean, not dewpoint_2m
+        if "dewpoint_2m_mean" in daily_data:
             forecast_df["2m_dewpoint_temperature_mean"] = [
                 d + 273.15 if d is not None else None 
-                for d in daily_data["dewpoint_2m"]
+                for d in daily_data["dewpoint_2m_mean"]
             ]
             # For min/max, use mean as approximation (API doesn't provide min/max dewpoint)
             forecast_df["2m_dewpoint_temperature_min"] = forecast_df["2m_dewpoint_temperature_mean"]
