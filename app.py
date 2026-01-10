@@ -398,6 +398,26 @@ def load_historical_demand(state_name):
     return None
 
 
+def get_fallback_baseline(state_name):
+    """
+    Get fallback baseline for a state when historical data is unavailable.
+    These are approximate typical daily demand values in MU.
+    """
+    fallback_baselines = {
+        'Maharashtra': 400.0, 'Gujarat': 250.0, 'Tamil Nadu': 300.0, 'Karnataka': 200.0,
+        'Uttar Pradesh': 350.0, 'West Bengal': 200.0, 'Rajasthan': 150.0, 'Madhya Pradesh': 180.0,
+        'Andhra Pradesh': 200.0, 'Telangana': 150.0, 'Punjab': 120.0, 'Haryana': 100.0,
+        'Bihar': 200.0, 'Odisha': 120.0, 'Kerala': 100.0, 'Assam': 80.0,
+        'Jharkhand': 100.0, 'Chhattisgarh': 100.0, 'Uttarakhand': 50.0, 'Himachal Pradesh': 40.0,
+        'Jammu and Kashmir': 50.0, 'NCT of Delhi': 150.0, 'Goa': 15.0, 'Puducherry': 10.0,
+        'Chandigarh': 8.0, 'Tripura': 30.0, 'Manipur': 25.0, 'Meghalaya': 20.0,
+        'Mizoram': 15.0, 'Nagaland': 20.0, 'Arunachal Pradesh': 15.0, 'Sikkim': 10.0,
+        'Dadra and Nagar Haveli': 5.0, 'Daman and Diu': 5.0, 'Lakshadweep': 2.0,
+        'Andaman and Nicobar': 5.0
+    }
+    return fallback_baselines.get(state_name, 100.0)  # Default to 100 MU if state not found
+
+
 def calculate_state_30d_baseline(historical_demand, date):
     """
     Calculate 30-day rolling baseline for a specific date.
@@ -467,10 +487,19 @@ def denormalize_predictions(predictions, dates, state_name, historical_demand=No
     if historical_demand is None or len(historical_demand) == 0:
         # #region agent log
         with open(log_path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "D", "location": "app.py:denormalize_predictions:early_return", "message": "Early return - no historical demand", "data": {"predictions_processed_mean": float(np.mean(predictions_processed))}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
+            f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "D", "location": "app.py:denormalize_predictions:no_historical", "message": "No historical demand - using fallback baseline", "data": {"predictions_processed_mean": float(np.mean(predictions_processed)), "state_name": state_name}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
         # #endregion
-        # If no baseline available, return processed predictions
-        return predictions_processed
+        
+        # FIX: Use fallback baseline when historical data unavailable (deployment scenario)
+        fallback_baseline = get_fallback_baseline(state_name)
+        
+        # #region agent log
+        with open(log_path, 'a', encoding='utf-8') as f:
+            result = predictions_processed * fallback_baseline
+            f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "D", "location": "app.py:denormalize_predictions:fallback_applied", "message": "Fallback baseline applied", "data": {"fallback_baseline": fallback_baseline, "result_mean": float(np.mean(result)), "result_min": float(np.min(result)), "result_max": float(np.max(result))}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
+        # #endregion
+        
+        return predictions_processed * fallback_baseline
     
     # For future dates (forecasting), use most recent 30-day baseline
     # Convert both to Timestamp for comparison (handles both Timestamp and date objects)
@@ -492,9 +521,11 @@ def denormalize_predictions(predictions, dates, state_name, historical_demand=No
             else:
                 # #region agent log
                 with open(log_path, 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "C", "location": "app.py:denormalize_predictions:no_baseline", "message": "No baseline available in historical_demand", "data": {"predictions_processed_mean": float(np.mean(predictions_processed))}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "C", "location": "app.py:denormalize_predictions:no_baseline", "message": "No baseline in historical_demand - using fallback", "data": {"predictions_processed_mean": float(np.mean(predictions_processed)), "state_name": state_name}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
                 # #endregion
-                return predictions_processed
+                # FIX: Use fallback baseline when historical_demand exists but has no data
+                fallback_baseline = get_fallback_baseline(state_name)
+                return predictions_processed * fallback_baseline
             
             # #region agent log
             result = predictions_processed * baseline
@@ -519,10 +550,11 @@ def denormalize_predictions(predictions, dates, state_name, historical_demand=No
     else:
         # #region agent log
         with open(log_path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "C", "location": "app.py:denormalize_predictions:no_dates", "message": "No dates provided - returning processed predictions", "data": {"predictions_processed_mean": float(np.mean(predictions_processed))}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
+            f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "C", "location": "app.py:denormalize_predictions:no_dates", "message": "No dates provided - using fallback baseline", "data": {"predictions_processed_mean": float(np.mean(predictions_processed)), "state_name": state_name}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
         # #endregion
-        # No dates provided, return processed predictions
-        return predictions_processed
+        # FIX: No dates provided - use fallback baseline instead of returning processed predictions
+        fallback_baseline = get_fallback_baseline(state_name)
+        return predictions_processed * fallback_baseline
 
 
 # ============================================================================
