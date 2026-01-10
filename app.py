@@ -1884,48 +1884,11 @@ with tab1:
                 # Make predictions using the model (model outputs log-space predictions)
                 pred_log = model.predict(X_forecast)
                 
-                # #region agent log
-                import json
-                log_path = r"c:\Users\LEGION\Desktop\Projects\Electricity-Demand-Forecaster\.cursor\debug.log"
-                with open(log_path, 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "app.py:1885", "message": "Model predictions (log-space)", "data": {"pred_log_mean": float(np.mean(pred_log)), "pred_log_min": float(np.min(pred_log)), "pred_log_max": float(np.max(pred_log)), "pred_log_shape": list(pred_log.shape)}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-                # #endregion
-                
-                # Fix 1: Convert from log space to raw MU using expm1
-                pred_mu = np.expm1(pred_log)
-                
-                # #region agent log
-                with open(log_path, 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "app.py:1888", "message": "After expm1 (processed space)", "data": {"pred_mu_mean": float(np.mean(pred_mu)), "pred_mu_min": float(np.min(pred_mu)), "pred_mu_max": float(np.max(pred_mu))}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-                # #endregion
-                
-                # #region agent log
-                historical_demand = load_historical_demand(state)
-                baseline = None
-                if historical_demand is not None and len(historical_demand) > 0:
-                    if len(historical_demand) >= 30:
-                        baseline = float(historical_demand['actual_demand_MU'].tail(30).mean())
-                    else:
-                        baseline = float(historical_demand['actual_demand_MU'].mean())
-                with open(log_path, 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "app.py:1890", "message": "Baseline calculation", "data": {"baseline": baseline, "historical_demand_len": len(historical_demand) if historical_demand is not None else 0, "state": state}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-                # #endregion
-                
-                # #region agent log
-                if baseline is not None:
-                    pred_mu_with_baseline = pred_mu * baseline
-                    with open(log_path, 'a', encoding='utf-8') as f:
-                        f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "app.py:1891", "message": "After baseline multiplication", "data": {"pred_mu_baseline_mean": float(np.mean(pred_mu_with_baseline)), "pred_mu_baseline_min": float(np.min(pred_mu_with_baseline)), "pred_mu_baseline_max": float(np.max(pred_mu_with_baseline))}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-                # #endregion
-                
-                # #region agent log
+                # Convert from log space to absolute MU using denormalize_predictions
                 historical_demand = load_historical_demand(state)
                 denorm_result = denormalize_predictions(pred_log, weather_forecast['date'], state, historical_demand)
-                with open(log_path, 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "post-fix", "hypothesisId": "E", "location": "app.py:1922", "message": "denormalize_predictions result", "data": {"denorm_mean": float(np.mean(denorm_result)), "denorm_min": float(np.min(denorm_result)), "denorm_max": float(np.max(denorm_result))}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-                # #endregion
                 
-                # Create results dataframe with absolute MU values (using denormalize_predictions)
+                # Create results dataframe with absolute MU values
                 results_df = pd.DataFrame({
                     'date': weather_forecast['date'],
                     'forecasted_demand_MU': denorm_result,  # Absolute MU values after baseline multiplication
@@ -1955,11 +1918,6 @@ with tab1:
                     'horizon_days': horizon_days,
                     'forecast_summary': forecast_summary  # Include locked summary
                 }
-                
-                # #region agent log
-                with open(log_path, 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "post-fix", "hypothesisId": "A", "location": "app.py:1959", "message": "Final forecasted_demand_MU after fix (should be > 10)", "data": {"mean": float(results_df['forecasted_demand_MU'].mean()), "min": float(results_df['forecasted_demand_MU'].min()), "max": float(results_df['forecasted_demand_MU'].max())}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-                # #endregion
                 
                 # Fix 5: Defensive assertion to catch model-space leaks
                 assert results_df['forecasted_demand_MU'].mean() > 10, \
