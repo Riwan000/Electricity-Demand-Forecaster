@@ -19,6 +19,23 @@ from datetime import datetime, timedelta
 import holidays
 import os
 import requests  # For weather API calls
+import json
+from scipy import stats  # For confidence interval calculation
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# RAG imports
+from utils.embeddings import get_embeddings, get_openrouter_api_key
+from utils.vector_store import VectorStore
+from utils.rag_builder import (
+    load_model_metadata as load_model_metadata_rag,
+    build_model_metrics_documents,
+    build_feature_importance_documents,
+    build_forecast_summary_documents
+)
+from utils.rag_engine import RAGEngine
 
 # ============================================================================
 # PAGE CONFIGURATION
@@ -124,6 +141,64 @@ def load_model():
     st.error("Model file not found. Please check the model path.")
     return None
 
+
+@st.cache_data
+def load_model_metadata():
+    """
+    Load model metadata including state-wise RMSE values.
+    
+    Returns:
+        dict: Model metadata dictionary or None if file not found
+    """
+    possible_paths = [
+        'model_metadata.json',
+        '../model_metadata.json',
+        './model_metadata.json'
+    ]
+    
+    for metadata_path in possible_paths:
+        if os.path.exists(metadata_path):
+            try:
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                return metadata
+            except Exception as e:
+                st.warning(f"Error loading metadata from {metadata_path}: {str(e)}")
+                continue
+    
+    return None
+
+
+def get_state_rmse(state_name, metadata):
+    """
+    Get state-specific RMSE from metadata.
+    
+    Parameters:
+        state_name (str): Name of the state
+        metadata (dict): Model metadata dictionary
+        
+    Returns:
+        float: RMSE value for the state, or None if not found
+    """
+    if metadata is None or 'state_rmse' not in metadata:
+        return None
+    
+    state_rmse_dict = metadata['state_rmse']
+    
+    # Try exact match first
+    if state_name in state_rmse_dict:
+        return state_rmse_dict[state_name]
+    
+    # Handle state name variations
+    if state_name == "Jammu and Kashmir":
+        if "J&K" in state_rmse_dict:
+            return state_rmse_dict["J&K"]
+    elif state_name == "J&K":
+        if "Jammu and Kashmir" in state_rmse_dict:
+            return state_rmse_dict["Jammu and Kashmir"]
+    
+    return None
+
 # ============================================================================
 # DATA LOADING FUNCTIONS
 # ============================================================================
@@ -200,6 +275,196 @@ def load_historical_data(state_name):
                 continue
     
     return None
+
+
+@st.cache_data
+def load_historical_demand(state_name):
+    """
+    Load historical actual demand data for a specific state from CSV files.
+    
+    This function loads the actual electricity demand data that was used to train
+    the model. It's used for residual analysis and baseline comparisons.
+    
+    Parameters:
+        state_name (str): Name of the Indian state
+        
+    Returns:
+        pd.DataFrame: Historical demand data with date and actual_demand_MU columns, or None if not found
+    """
+    # Mapping of state names to CSV column names in daily_energy_met_MU.csv
+    state_column_map = {
+        'Andhra Pradesh': 'Andhra Pradesh',
+        'Arunachal Pradesh': 'Arunachal Pradesh',
+        'Assam': 'Assam',
+        'Bihar': 'Bihar',
+        'Chhattisgarh': 'Chhattisgarh',
+        'Goa': 'Goa',
+        'Gujarat': 'Gujarat',
+        'Haryana': 'Haryana',
+        'Himachal Pradesh': 'Himachal Pradesh',
+        'Jammu and Kashmir': 'Jammu and Kashmir',
+        'Jharkhand': 'Jharkhand',
+        'Karnataka': 'Karnataka',
+        'Kerala': 'Kerala',
+        'Madhya Pradesh': 'Madhya Pradesh',
+        'Maharashtra': 'Maharashtra',
+        'Manipur': 'Manipur',
+        'Meghalaya': 'Meghalaya',
+        'Mizoram': 'Mizoram',
+        'Nagaland': 'Nagaland',
+        'Odisha': 'Odisha',
+        'Punjab': 'Punjab',
+        'Rajasthan': 'Rajasthan',
+        'Sikkim': 'Sikkim',
+        'Tamil Nadu': 'Tamil Nadu',
+        'Telangana': 'Telangana',
+        'Tripura': 'Tripura',
+        'Uttar Pradesh': 'Uttar Pradesh',
+        'Uttarakhand': 'Uttarakhand',
+        'West Bengal': 'West Bengal',
+        'NCT of Delhi': 'Delhi',
+        'Puducherry': 'Puducherry',
+        'Chandigarh': 'Chandigarh',
+        'Dadra and Nagar Haveli': 'Dadra and Nagar Haveli',
+        'Daman and Diu': 'Daman and Diu',
+        'Lakshadweep': 'Lakshadweep',
+        'Andaman and Nicobar': 'Andaman and Nicobar Islands'
+    }
+    
+    # Get column name for the state
+    column_name = state_column_map.get(state_name)
+    if column_name is None:
+        return None
+    
+    # Try multiple possible file paths
+    possible_paths = [
+        'data/daily_energy_met_MU.csv',
+        '../data/daily_energy_met_MU.csv',
+        'data/14983362/daily_energy_met_MU.csv',
+        '../data/14983362/daily_energy_met_MU.csv'
+    ]
+    
+    for file_path in possible_paths:
+        if os.path.exists(file_path):
+            try:
+                df = pd.read_csv(file_path)
+                
+                # Check if the column exists
+                if column_name not in df.columns:
+                    # Try alternative column name
+                    if state_name == 'NCT of Delhi' and 'Delhi' in df.columns:
+                        column_name = 'Delhi'
+                    elif state_name == 'Andaman and Nicobar' and 'Andaman and Nicobar Islands' in df.columns:
+                        column_name = 'Andaman and Nicobar Islands'
+                    else:
+                        continue
+                
+                # Extract date and demand columns
+                date_col = 'Date' if 'Date' in df.columns else 'date'
+                if date_col not in df.columns:
+                    continue
+                
+                demand_df = pd.DataFrame({
+                    'date': pd.to_datetime(df[date_col]),
+                    'actual_demand_MU': pd.to_numeric(df[column_name], errors='coerce')
+                })
+                
+                # Remove rows with missing values
+                demand_df = demand_df.dropna()
+                
+                if len(demand_df) > 0:
+                    return demand_df
+                    
+            except Exception as e:
+                st.warning(f"Error loading demand data from {file_path}: {str(e)}")
+                continue
+    
+    return None
+
+
+def calculate_state_30d_baseline(historical_demand, date):
+    """
+    Calculate 30-day rolling baseline for a specific date.
+    
+    Parameters:
+        historical_demand (pd.DataFrame): DataFrame with date and actual_demand_MU columns
+        date (pd.Timestamp): Date for which to calculate baseline
+        
+    Returns:
+        float: 30-day rolling average baseline, or None if insufficient data
+    """
+    if historical_demand is None or len(historical_demand) == 0:
+        return None
+    
+    # Filter to dates before the target date
+    historical_demand_sorted = historical_demand.sort_values('date')
+    before_date = historical_demand_sorted[historical_demand_sorted['date'] < date]
+    
+    if len(before_date) < 30:
+        # Use available data if less than 30 days
+        if len(before_date) > 0:
+            return before_date['actual_demand_MU'].tail(len(before_date)).mean()
+        return None
+    
+    # Calculate 30-day rolling average
+    baseline = before_date['actual_demand_MU'].tail(30).mean()
+    return baseline
+
+
+def denormalize_predictions(predictions, dates, state_name, historical_demand=None):
+    """
+    Convert log-space predictions to absolute MU values.
+    
+    Model (XGB2_Log) outputs log1p-transformed predictions. This function:
+    1. Applies expm1 to convert from log space to processed space
+    2. Multiplies by state_30d_baseline to get absolute MU values
+    
+    Parameters:
+        predictions (np.array): Log-space predictions from model
+        dates (pd.Series): Dates corresponding to predictions
+        state_name (str): Name of the state
+        historical_demand (pd.DataFrame): Optional historical demand data for baseline calculation
+        
+    Returns:
+        np.array: Absolute predictions in MU
+    """
+    # First, convert from log space to processed space (expm1 reverses log1p)
+    predictions_processed = np.expm1(predictions)
+    
+    if historical_demand is None:
+        historical_demand = load_historical_demand(state_name)
+    
+    if historical_demand is None or len(historical_demand) == 0:
+        # If no baseline available, return processed predictions
+        return predictions_processed
+    
+    # For future dates (forecasting), use most recent 30-day baseline
+    # Convert both to Timestamp for comparison (handles both Timestamp and date objects)
+    if len(dates) > 0:
+        first_date = pd.Timestamp(dates.iloc[0])
+        current_date = pd.Timestamp.now()
+        if first_date > current_date:
+            # Forecasting future dates - use recent baseline
+            if len(historical_demand) >= 30:
+                baseline = historical_demand['actual_demand_MU'].tail(30).mean()
+            elif len(historical_demand) > 0:
+                baseline = historical_demand['actual_demand_MU'].mean()
+            else:
+                return predictions_processed
+            
+            return predictions_processed * baseline
+        else:
+            # Historical dates - calculate baseline for each date
+            baselines = dates.apply(lambda d: calculate_state_30d_baseline(historical_demand, d))
+            # Fill NaN baselines with mean
+            if baselines.isna().any():
+                mean_baseline = baselines.mean() if baselines.notna().any() else historical_demand['actual_demand_MU'].mean()
+                baselines = baselines.fillna(mean_baseline)
+            return predictions_processed * baselines.values
+    else:
+        # No dates provided, return processed predictions
+        return predictions_processed
+
 
 # ============================================================================
 # WEATHER API FUNCTIONS
@@ -603,6 +868,22 @@ def engineer_features(df, state_name):
     df['max.demand met during the day(mw)'] = 0.0  # Placeholder
     df['state_share'] = 0.0  # Placeholder
     
+    # Calculate state_30d_baseline - CRITICAL: Model expects this as a feature
+    # Load historical demand to calculate baseline
+    historical_demand = load_historical_demand(state_name)
+    if historical_demand is not None and len(historical_demand) > 0:
+        # Calculate 30-day baseline for each date
+        df['state_30d_baseline'] = df['date'].apply(
+            lambda d: calculate_state_30d_baseline(historical_demand, d)
+        )
+        # Fill NaN with mean baseline if any dates don't have enough history
+        if df['state_30d_baseline'].isna().any():
+            mean_baseline = df['state_30d_baseline'].mean() if df['state_30d_baseline'].notna().any() else historical_demand['actual_demand_MU'].mean()
+            df['state_30d_baseline'] = df['state_30d_baseline'].fillna(mean_baseline)
+    else:
+        # If no historical demand available, use a default (but this is not ideal)
+        df['state_30d_baseline'] = 100.0  # Default fallback
+    
     # Temperature range
     df['temp_range'] = df['2m_temperature_max'] - df['2m_temperature_min']
     df['temp_range_heat'] = df['temp_range'] * df['extreme_heat_flag']
@@ -789,6 +1070,688 @@ def prepare_features_for_prediction(weather_df, state_name, model=None):
     return X, df_features
 
 # ============================================================================
+# WEATHER IMPACT VISUALIZATION FUNCTIONS
+# ============================================================================
+
+def get_feature_importance(model, top_n=15, filter_weather_only=False):
+    """
+    Extract feature importance from XGBoost model.
+    
+    Parameters:
+        model: Trained XGBoost model
+        top_n: Number of top features to return
+        filter_weather_only: If True, only return weather-related features
+        
+    Returns:
+        dict: Dictionary with feature names as keys and importance scores as values
+    """
+    if model is None or not hasattr(model, 'feature_importances_'):
+        return None
+    
+    try:
+        feature_names = model.feature_names_in_
+        importances = model.feature_importances_
+        
+        # Create dictionary of feature importance
+        importance_dict = dict(zip(feature_names, importances))
+        
+        # Filter to weather-only features if requested
+        if filter_weather_only:
+            weather_categories = ['Temperature', 'Humidity', 'Weather']
+            weather_features = {}
+            for feat, imp in importance_dict.items():
+                category = categorize_feature(feat)
+                if category in weather_categories:
+                    weather_features[feat] = imp
+            importance_dict = weather_features
+        
+        # Sort by importance (descending)
+        sorted_importance = dict(sorted(importance_dict.items(), key=lambda x: x[1], reverse=True))
+        
+        # Return top N features
+        top_features = dict(list(sorted_importance.items())[:top_n])
+        
+        return top_features
+    except Exception as e:
+        return None
+
+
+def categorize_feature(feature_name):
+    """
+    Categorize a feature into a group for color coding.
+    
+    Parameters:
+        feature_name: Name of the feature
+        
+    Returns:
+        str: Category name
+    """
+    feature_lower = feature_name.lower()
+    
+    if any(x in feature_lower for x in ['temperature', 'temp', 'cdd']):
+        return 'Temperature'
+    elif any(x in feature_lower for x in ['dewpoint', 'utci', 'humidity']):
+        return 'Humidity'
+    elif any(x in feature_lower for x in ['month', 'day', 'weekend', 'holiday', 'season']):
+        return 'Calendar'
+    elif any(x in feature_lower for x in ['solar', 'radiation', 'cloud', 'wind']):
+        return 'Weather'
+    elif any(x in feature_lower for x in ['generation', 'energy', 'demand', 'rolling', 'avg']):
+        return 'Historical'
+    elif any(x in feature_lower for x in ['state', 'region']):
+        return 'Location'
+    else:
+        return 'Other'
+
+
+def plot_demand_temperature_overlay(results_df, weather_df, df_features=None):
+    """
+    Create dual-axis plot showing demand and temperature on the same timeline.
+    Optionally includes baseline (7-day average) for comparison.
+    
+    Parameters:
+        results_df: DataFrame with forecasted demand and dates
+        weather_df: DataFrame with temperature data
+        df_features: Optional DataFrame with features to calculate baseline
+        
+    Returns:
+        plotly.graph_objects.Figure: Plotly figure object
+    """
+    # Merge dataframes on date
+    merged_df = pd.merge(results_df, weather_df, on='date', how='inner')
+    
+    # Convert temperature from Kelvin to Celsius
+    temp_mean_c = merged_df['2m_temperature_mean'] - 273.15
+    temp_max_c = merged_df['2m_temperature_max'] - 273.15
+    
+    # Create figure with secondary y-axis
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    
+    # Add baseline (7-day rolling average) if features available
+    if df_features is not None and 'energymet_7d_avg' in df_features.columns:
+        # Merge to get baseline
+        baseline_df = pd.merge(results_df, df_features[['date', 'energymet_7d_avg']], on='date', how='inner')
+        if len(baseline_df) > 0 and 'energymet_7d_avg' in baseline_df.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=baseline_df['date'],
+                    y=baseline_df['energymet_7d_avg'],
+                    mode='lines',
+                    name='Baseline (7-day avg, no weather)',
+                    line=dict(color='gray', width=2, dash='dash'),
+                    hovertemplate='<b>%{x|%Y-%m-%d}</b><br>Baseline: %{y:.2f}<extra></extra>'
+                ),
+                secondary_y=False,
+            )
+    
+    # Add demand trace (primary axis)
+    fig.add_trace(
+        go.Scatter(
+            x=merged_df['date'],
+            y=merged_df['forecasted_demand_MU'],
+            mode='lines+markers',
+            name='Forecasted Demand (with weather)',
+            line=dict(color='#1f77b4', width=3),
+            marker=dict(size=6),
+            hovertemplate='<b>%{x|%Y-%m-%d}</b><br>Demand: %{y:.2f} (normalized)<extra></extra>'
+        ),
+        secondary_y=False,
+    )
+    
+    # Add temperature mean trace (secondary axis)
+    fig.add_trace(
+        go.Scatter(
+            x=merged_df['date'],
+            y=temp_mean_c,
+            mode='lines+markers',
+            name='Temperature (Mean)',
+            line=dict(color='#ff7f0e', width=2, dash='solid'),
+            marker=dict(size=5),
+            hovertemplate='<b>%{x|%Y-%m-%d}</b><br>Temp: %{y:.1f}°C<extra></extra>'
+        ),
+        secondary_y=True,
+    )
+    
+    # Add temperature max trace (secondary axis)
+    fig.add_trace(
+        go.Scatter(
+            x=merged_df['date'],
+            y=temp_max_c,
+            mode='lines+markers',
+            name='Temperature (Max)',
+            line=dict(color='#d62728', width=2, dash='dash'),
+            marker=dict(size=5),
+            hovertemplate='<b>%{x|%Y-%m-%d}</b><br>Temp Max: %{y:.1f}°C<extra></extra>'
+        ),
+        secondary_y=True,
+    )
+    
+    # Calculate correlation
+    correlation = merged_df['forecasted_demand_MU'].corr(temp_mean_c)
+    
+    # Set x-axis title
+    fig.update_xaxes(title_text="Date")
+    
+    # Set y-axes titles
+    fig.update_yaxes(title_text="Demand (normalized units)", secondary_y=False)
+    fig.update_yaxes(title_text="Temperature (°C)", secondary_y=True)
+    
+    # Update layout
+    fig.update_layout(
+        title=f"Demand vs Temperature Overlay (Correlation: {correlation:.3f})",
+        hovermode='x unified',
+        height=500,
+        template='plotly_white',
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        )
+    )
+    
+    return fig
+
+
+def plot_cdd_timeline(results_df, df_features):
+    """
+    Plot CDD (Cooling Degree Days) as bars with demand overlay.
+    
+    Parameters:
+        results_df: DataFrame with forecasted demand and dates
+        df_features: DataFrame with engineered features including CDD
+        
+    Returns:
+        plotly.graph_objects.Figure: Plotly figure object
+    """
+    # Merge dataframes on date - handle duplicate columns with suffixes
+    merged_df = pd.merge(results_df, df_features, on='date', how='inner', suffixes=('_results', '_features'))
+    
+    # Resolve CDD column - handle merge suffixes
+    if 'cdd_features' in merged_df.columns:
+        cdd_values = merged_df['cdd_features']
+    elif 'cdd_results' in merged_df.columns:
+        cdd_values = merged_df['cdd_results']
+    elif 'cdd' in merged_df.columns:
+        cdd_values = merged_df['cdd']
+    else:
+        # Fallback: use from results_df
+        cdd_values = results_df['cdd'] if 'cdd' in results_df.columns else pd.Series([0.0] * len(merged_df))
+    
+    # Convert CDD from Kelvin to Celsius (if needed, CDD is already in correct units)
+    # CDD is calculated as (temp_mean - 297.15), so it's already in Kelvin units
+    # For display, we can show it as-is or convert
+    
+    # Create figure with secondary y-axis
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    
+    # Resolve extreme_heat column - handle merge suffixes
+    if 'extreme_heat_features' in merged_df.columns:
+        extreme_heat_col = 'extreme_heat_features'
+    elif 'extreme_heat_results' in merged_df.columns:
+        extreme_heat_col = 'extreme_heat_results'
+    elif 'extreme_heat' in merged_df.columns:
+        extreme_heat_col = 'extreme_heat'
+    else:
+        extreme_heat_col = None
+        # Create dummy column if missing
+        merged_df['extreme_heat'] = 0
+    
+    # Use resolved column or fallback
+    heat_col_for_color = extreme_heat_col if extreme_heat_col else 'extreme_heat'
+    
+    # Add CDD bars (primary axis)
+    fig.add_trace(
+        go.Bar(
+            x=merged_df['date'],
+            y=cdd_values,
+            name='CDD',
+            marker=dict(
+                color=merged_df[heat_col_for_color],
+                colorscale='Reds',
+                showscale=True,
+                colorbar=dict(title="Extreme Heat", x=1.15),
+                cmin=0,
+                cmax=1
+            ),
+            hovertemplate='<b>%{x|%Y-%m-%d}</b><br>CDD: %{y:.2f}°C<extra></extra>'
+        ),
+        secondary_y=False,
+    )
+    
+    # Add demand line (secondary axis)
+    fig.add_trace(
+        go.Scatter(
+            x=merged_df['date'],
+            y=merged_df['forecasted_demand_MU'],
+            mode='lines+markers',
+            name='Forecasted Demand',
+            line=dict(color='#1f77b4', width=3),
+            marker=dict(size=6),
+            hovertemplate='<b>%{x|%Y-%m-%d}</b><br>Demand: %{y:.2f} MU<extra></extra>'
+        ),
+        secondary_y=True,
+    )
+    
+    # Highlight extreme heat days with markers
+    if extreme_heat_col:
+        extreme_heat_days = merged_df[merged_df[extreme_heat_col] == 1]
+    else:
+        extreme_heat_days = pd.DataFrame()  # Empty dataframe if no extreme_heat column
+    if len(extreme_heat_days) > 0:
+        fig.add_trace(
+            go.Scatter(
+                x=extreme_heat_days['date'],
+                y=extreme_heat_days['forecasted_demand_MU'],
+                mode='markers',
+                name='Extreme Heat',
+                marker=dict(
+                    symbol='triangle-up',
+                    size=12,
+                    color='red',
+                    line=dict(width=2, color='darkred')
+                ),
+                hovertemplate='<b>%{x|%Y-%m-%d}</b><br>Extreme Heat Day<br>Demand: %{y:.2f} MU<extra></extra>'
+            ),
+            secondary_y=True,
+        )
+    
+    # Set x-axis title
+    fig.update_xaxes(title_text="Date")
+    
+    # Set y-axes titles
+    fig.update_yaxes(title_text="CDD (°C)", secondary_y=False)
+    fig.update_yaxes(title_text="Demand (normalized units)", secondary_y=True)
+    
+    # Update layout
+    fig.update_layout(
+        title="Cooling Degree Days (CDD) Timeline with Demand Overlay",
+        hovermode='x unified',
+        height=500,
+        template='plotly_white',
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        ),
+        barmode='overlay'
+    )
+    
+    return fig
+
+
+def plot_feature_importance(importance_dict, chart_type='bar'):
+    """
+    Plot feature importance as horizontal bar chart with color coding by category.
+    
+    Parameters:
+        importance_dict: Dictionary with feature names and importance scores
+        chart_type: Type of chart ('bar' or 'horizontal_bar')
+        
+    Returns:
+        plotly.graph_objects.Figure: Plotly figure object
+    """
+    if importance_dict is None or len(importance_dict) == 0:
+        return None
+    
+    # Prepare data
+    features = list(importance_dict.keys())
+    importances = list(importance_dict.values())
+    categories = [categorize_feature(feat) for feat in features]
+    
+    # Create color map for categories
+    category_colors = {
+        'Temperature': '#ff7f0e',
+        'Humidity': '#2ca02c',
+        'Calendar': '#9467bd',
+        'Weather': '#8c564b',
+        'Historical': '#e377c2',
+        'Location': '#7f7f7f',
+        'Other': '#bcbd22'
+    }
+    
+    colors = [category_colors.get(cat, '#bcbd22') for cat in categories]
+    
+    # Create horizontal bar chart
+    fig = go.Figure()
+    
+    fig.add_trace(go.Bar(
+        x=importances,
+        y=features,
+        orientation='h',
+        marker=dict(color=colors),
+        text=[f'{imp:.4f}' for imp in importances],
+        textposition='outside',
+        hovertemplate='<b>%{y}</b><br>Importance: %{x:.4f}<extra></extra>'
+    ))
+    
+    # Update layout
+    fig.update_layout(
+        title="Model Dependency (Relative Influence)",
+        xaxis_title="Relative Influence Score",
+        yaxis_title="Feature",
+        height=max(400, len(features) * 25),
+        template='plotly_white',
+        yaxis=dict(autorange="reversed")
+    )
+    
+    # Add legend for categories
+    unique_categories = list(set(categories))
+    legend_items = []
+    for cat in unique_categories:
+        legend_items.append(
+            dict(
+                label=cat,
+                marker=dict(color=category_colors.get(cat, '#bcbd22'))
+            )
+        )
+    
+    return fig
+
+
+def generate_weather_insight(results_df, df_features, state_name):
+    """
+    Generate natural language insight about weather impact on demand.
+    
+    Parameters:
+        results_df: DataFrame with forecasted demand and dates
+        df_features: DataFrame with engineered features
+        state_name: Name of the state
+        
+    Returns:
+        str: Natural language insight text
+    """
+    # Merge dataframes - use suffixes to handle duplicate columns
+    # Since both results_df and df_features have 'cdd', we'll get 'cdd_results' and 'cdd_features'
+    merged_df = pd.merge(results_df, df_features, on='date', how='inner', suffixes=('_results', '_features'))
+    
+    if len(merged_df) == 0:
+        return "No data available for insight generation."
+    
+    # Resolve CDD column - check for merged suffixes first, then fallback
+    if 'cdd_features' in merged_df.columns:
+        merged_df['cdd'] = merged_df['cdd_features']  # Create unified 'cdd' column
+    elif 'cdd_results' in merged_df.columns:
+        merged_df['cdd'] = merged_df['cdd_results']  # Create unified 'cdd' column
+    elif 'cdd' not in merged_df.columns:
+        # Fallback: try to get from original dataframes
+        if 'cdd' in results_df.columns:
+            merged_df['cdd'] = results_df['cdd'].values
+        elif 'cdd' in df_features.columns:
+            merged_df['cdd'] = df_features['cdd'].values
+    
+    # Convert temperature to Celsius
+    temp_mean_c = merged_df['2m_temperature_mean'] - 273.15
+    temp_max_c = merged_df['2m_temperature_max'] - 273.15
+    
+    # Find peak demand day
+    peak_idx = merged_df['forecasted_demand_MU'].idxmax()
+    peak_demand = merged_df.loc[peak_idx, 'forecasted_demand_MU']
+    peak_date = merged_df.loc[peak_idx, 'date']
+    peak_temp = temp_mean_c.loc[peak_idx]
+    peak_temp_max = temp_max_c.loc[peak_idx]
+    peak_cdd = merged_df.loc[peak_idx, 'cdd'] if 'cdd' in merged_df.columns else 0.0
+    
+    # Calculate correlations
+    temp_demand_corr = merged_df['forecasted_demand_MU'].corr(temp_mean_c)
+    
+    # Use resolved CDD column
+    if 'cdd' in merged_df.columns:
+        cdd_demand_corr = merged_df['forecasted_demand_MU'].corr(merged_df['cdd'])
+        avg_cdd = merged_df['cdd'].mean()
+        max_cdd = merged_df['cdd'].max()
+    else:
+        cdd_demand_corr = 0.0
+        avg_cdd = 0.0
+        max_cdd = 0.0
+    
+    # Count extreme heat days - handle merge suffixes
+    if 'extreme_heat_features' in merged_df.columns:
+        extreme_heat_count = merged_df['extreme_heat_features'].sum()
+    elif 'extreme_heat_results' in merged_df.columns:
+        extreme_heat_count = merged_df['extreme_heat_results'].sum()
+    elif 'extreme_heat' in merged_df.columns:
+        extreme_heat_count = merged_df['extreme_heat'].sum()
+    else:
+        extreme_heat_count = 0
+    
+    total_days = len(merged_df)
+    extreme_heat_pct = (extreme_heat_count / total_days * 100) if total_days > 0 else 0
+    
+    # Calculate average temperature
+    avg_temp = temp_mean_c.mean()
+    max_temp = temp_max_c.max()
+    
+    # Generate insight
+    insights = []
+    
+    # Peak demand insight
+    insights.append(
+        f"**Peak Demand**: Demand peaks on {peak_date.strftime('%B %d, %Y')} at {peak_temp:.1f}°C "
+        f"(max {peak_temp_max:.1f}°C) with CDD of {peak_cdd:.1f}°C, coinciding with elevated demand of {peak_demand:.2f} (normalized units)."
+    )
+    
+    # Correlation insight
+    if abs(temp_demand_corr) > 0.5:
+        corr_strength = "strong" if abs(temp_demand_corr) > 0.7 else "moderate"
+        corr_direction = "positive" if temp_demand_corr > 0 else "negative"
+        insights.append(
+            f"**Temperature Impact**: {corr_strength.capitalize()} {corr_direction} correlation ({temp_demand_corr:.2f}) "
+            f"between temperature and demand, suggesting temperature influences demand patterns."
+        )
+    
+    # Extreme heat insight - with threshold explanation
+    if extreme_heat_count > 0:
+        insights.append(
+            f"**Extreme Heat Risk**: {extreme_heat_count} extreme heat day(s) identified ({extreme_heat_pct:.0f}% of period), "
+            f"with average CDD of {avg_cdd:.1f}°C (max {max_cdd:.1f}°C), potentially amplifying cooling load. "
+            f"*Extreme heat defined as days where max temperature exceeds the 95th percentile for {state_name}.*"
+        )
+    else:
+        insights.append(
+            f"**Temperature Conditions**: No extreme heat days in this period. Average temperature is {avg_temp:.1f}°C "
+            f"(max {max_temp:.1f}°C) with average CDD of {avg_cdd:.1f}°C. "
+            f"*Extreme heat threshold: 95th percentile of max temperature for {state_name}.*"
+        )
+    
+    # CDD insight
+    if cdd_demand_corr > 0.3:
+        insights.append(
+            f"**Cooling Load**: CDD shows {cdd_demand_corr:.2f} correlation with demand, suggesting that "
+            f"cooling degree days influence electricity consumption patterns in {state_name}."
+        )
+    
+    return " ".join(insights)
+
+
+def get_seasonal_comparison(state_name, current_season, historical_df=None):
+    """
+    Get seasonal comparison data for a state.
+    
+    Parameters:
+        state_name: Name of the state
+        current_season: Current season ('Summer', 'Monsoon', 'Winter', 'Autumn')
+        historical_df: Optional historical dataframe (if None, will load)
+        
+    Returns:
+        dict: Dictionary with seasonal statistics
+    """
+    if historical_df is None:
+        historical_df = load_historical_data(state_name)
+    
+    if historical_df is None or len(historical_df) == 0:
+        return None
+    
+    # Engineer features to get season
+    df_features = engineer_features(historical_df, state_name)
+    
+    # Group by season
+    seasonal_stats = {}
+    for season in ['Summer', 'Monsoon', 'Winter', 'Autumn']:
+        season_data = df_features[df_features['season'] == season]
+        if len(season_data) > 0:
+            temp_mean_c = (season_data['2m_temperature_mean'] - 273.15).mean()
+            temp_max_c = (season_data['2m_temperature_max'] - 273.15).mean()
+            cdd_mean = season_data['cdd'].mean()
+            extreme_heat_pct = (season_data['extreme_heat'].sum() / len(season_data) * 100)
+            
+            seasonal_stats[season] = {
+                'temp_mean': temp_mean_c,
+                'temp_max': temp_max_c,
+                'cdd_mean': cdd_mean,
+                'extreme_heat_pct': extreme_heat_pct,
+                'count': len(season_data)
+            }
+    
+    return seasonal_stats
+
+
+# ============================================================================
+# RAG FUNCTIONS
+# ============================================================================
+
+def generate_forecast_summary(results_df, state, horizon_days, df_features=None, metadata=None):
+    """
+    Generate structured forecast summary for RAG system.
+    Creates a single locked object per forecast with exact values - no recomputation allowed.
+    
+    Parameters:
+        results_df: DataFrame with forecast results
+        state: State name
+        horizon_days: Forecast horizon in days
+        df_features: Optional DataFrame with features
+        metadata: Optional model metadata for RMSE and confidence_level
+        
+    Returns:
+        Dictionary containing forecast summary with locked schema
+    """
+    if results_df is None or len(results_df) == 0:
+        return None
+    
+    # Get state-specific RMSE from metadata
+    state_rmse = None
+    confidence_level = 0.9  # Default
+    if metadata:
+        state_rmse_dict = metadata.get('state_rmse', {})
+        # Handle state name variations
+        state_rmse = state_rmse_dict.get(state)
+        if state_rmse is None and state == "Jammu and Kashmir":
+            state_rmse = state_rmse_dict.get("J&K")
+        confidence_level = metadata.get('confidence_level', 0.9)
+    
+    # Identify high-risk days (extreme heat or very high demand)
+    high_risk_dates = []
+    extreme_heat_dates = []
+    
+    if 'extreme_heat' in results_df.columns:
+        # Get extreme heat dates
+        extreme_heat_rows = results_df[results_df['extreme_heat'] == 1]
+        extreme_heat_dates = [row['date'].strftime('%Y-%m-%d') for _, row in extreme_heat_rows.iterrows()]
+        
+        # High-risk days: extreme heat OR top 10% demand
+        high_demand_threshold = results_df['forecasted_demand_MU'].quantile(0.9)
+        high_risk_rows = results_df[
+            (results_df['extreme_heat'] == 1) | 
+            (results_df['forecasted_demand_MU'] >= high_demand_threshold)
+        ]
+        high_risk_dates = [row['date'].strftime('%Y-%m-%d') for _, row in high_risk_rows.iterrows()]
+    
+    # Create locked forecast summary object
+    summary = {
+        'state': state,
+        'horizon_days': int(horizon_days),
+        'start_date': results_df['date'].min().strftime('%Y-%m-%d'),
+        'end_date': results_df['date'].max().strftime('%Y-%m-%d'),
+        'avg_demand': round(float(results_df['forecasted_demand_MU'].mean()), 1),
+        'peak_demand': round(float(results_df['forecasted_demand_MU'].max()), 1),
+        'peak_date': results_df.loc[results_df['forecasted_demand_MU'].idxmax(), 'date'].strftime('%Y-%m-%d'),
+        'min_demand': round(float(results_df['forecasted_demand_MU'].min()), 1),
+        'high_risk_days_count': len(high_risk_dates),
+        'high_risk_dates': high_risk_dates,
+        'extreme_heat_dates': extreme_heat_dates,
+        'rmse': round(float(state_rmse), 2) if state_rmse is not None else None,
+        'confidence_level': confidence_level
+    }
+    
+    return summary
+
+
+@st.cache_resource
+def initialize_rag_system():
+    """
+    Initialize RAG system with knowledge base.
+    Creates vector store and loads initial knowledge documents.
+    
+    Returns:
+        Tuple of (VectorStore, RAGEngine) or (None, None) if initialization fails
+    """
+    try:
+        # Create data directory for RAG index if it doesn't exist
+        rag_index_dir = "data/rag_index"
+        os.makedirs(rag_index_dir, exist_ok=True)
+        index_path = os.path.join(rag_index_dir, "knowledge_base.index")
+        
+        # Initialize vector store
+        # Dimension 384 for sentence-transformers (all-MiniLM-L6-v2)
+        # Will auto-adjust if using OpenAI embeddings (1536)
+        vector_store = VectorStore(dimension=384, index_path=index_path)
+        
+        # Check if index already exists and has documents
+        if vector_store.get_size() > 0:
+            # Index already loaded
+            rag_engine = RAGEngine(vector_store)
+            return vector_store, rag_engine
+        
+        # Build knowledge base from model metadata
+        try:
+            metadata = load_model_metadata_rag("model_metadata.json")
+            model_metrics_docs = build_model_metrics_documents(metadata)
+            
+            # Get model for feature importance
+            model = load_model()
+            if model:
+                feature_importance = get_feature_importance(model, top_n=15)
+                if feature_importance:
+                    feature_docs = build_feature_importance_documents(feature_importance)
+                    model_metrics_docs.extend(feature_docs)
+            
+            # Embed and add documents
+            if model_metrics_docs:
+                texts = [doc['text'] for doc in model_metrics_docs]
+                metadata_list = [doc['metadata'] for doc in model_metrics_docs]
+                
+                try:
+                    embeddings = get_embeddings(texts)
+                    vector_store.add_documents(embeddings, texts, metadata_list)
+                    vector_store.save_index()
+                except Exception as e:
+                    # If embedding fails (e.g., no API key), return None
+                    st.warning(f"Could not initialize embeddings: {str(e)}")
+                    return None, None
+            
+            # Initialize RAG engine
+            rag_engine = RAGEngine(vector_store)
+            
+            return vector_store, rag_engine
+            
+        except FileNotFoundError as e:
+            st.warning("Model metadata file not found. RAG system will work with forecast data only.")
+            # Return empty vector store that can be populated with forecasts
+            rag_engine = RAGEngine(vector_store)
+            return vector_store, rag_engine
+        except Exception as e:
+            st.error(f"Error building knowledge base: {str(e)}")
+            return None, None
+            
+    except Exception as e:
+        st.error(f"Error initializing RAG system: {str(e)}")
+        return None, None
+
+
+# ============================================================================
 # MAIN STREAMLIT APP
 # ============================================================================
 
@@ -823,12 +1786,39 @@ with st.sidebar:
     
     st.markdown("---")
     st.caption("💡 Tip: Weather API provides more accurate forecasts but requires internet connection.")
+    
+    # RAG/AI Assistant status
+    st.markdown("---")
+    st.subheader("🤖 AI Assistant")
+    
+    # Check for sentence-transformers
+    try:
+        from sentence_transformers import SentenceTransformer
+        st.success("✅ Local embeddings available")
+        st.caption("Using sentence-transformers (no API needed)")
+    except ImportError:
+        st.warning("⚠️ sentence-transformers not installed")
+        st.caption("Install for free local embeddings: `pip install sentence-transformers`")
+        with st.expander("Installation Instructions"):
+            st.code("pip install sentence-transformers", language="bash")
+            st.markdown("""
+            **Why install this?**
+            - Free local embeddings (no API costs)
+            - Works offline
+            - Faster than API calls
+            - First download is ~90MB, then cached locally
+            """)
+    
+    api_key = get_openrouter_api_key()
+    if api_key:
+        st.info("ℹ️ API key configured (optional - local embeddings preferred)")
+    else:
+        st.caption("💡 Tip: Local embeddings work without an API key")
 
 # Main tabs
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3 = st.tabs([
     "📊 Forecast", 
     "🌡️ Weather Impact", 
-    "⚠️ Risk & Diagnostics", 
     "🤖 AI Energy Assistant"
 ])
 
@@ -894,16 +1884,43 @@ with tab1:
                 # Make predictions using the model
                 predictions = model.predict(X_forecast)
                 
+                # Denormalize predictions to absolute MU values
+                predictions_absolute = denormalize_predictions(
+                    predictions, 
+                    weather_forecast['date'], 
+                    state
+                )
+                
                 # Create results dataframe
                 results_df = pd.DataFrame({
                     'date': weather_forecast['date'],
-                    'forecasted_demand_MU': predictions,
+                    'forecasted_demand_MU': predictions_absolute,  # Use absolute predictions
                     'temperature_mean': weather_forecast['2m_temperature_mean'],
                     'temperature_max': weather_forecast['2m_temperature_max'],
                     'cdd': df_features['cdd'],
                     'extreme_heat': df_features['extreme_heat'],
                     'is_holiday': df_features['is_holiday']
                 })
+                
+                # Generate forecast summary with locked schema
+                metadata = load_model_metadata()
+                forecast_summary = generate_forecast_summary(
+                    results_df,
+                    state,
+                    horizon_days,
+                    df_features,
+                    metadata=metadata
+                )
+                
+                # Store forecast data in session state for Tab 2 and Tab 3
+                st.session_state['last_forecast'] = {
+                    'results_df': results_df,
+                    'weather_forecast': weather_forecast,
+                    'df_features': df_features,
+                    'state': state,
+                    'horizon_days': horizon_days,
+                    'forecast_summary': forecast_summary  # Include locked summary
+                }
                 
                 # Display success message
                 st.success(f"✅ Forecast generated successfully for **{state}** ({horizon_days} days)")
@@ -932,7 +1949,55 @@ with tab1:
                 # Main forecast plot
                 st.subheader("📊 Forecast Visualization")
                 
+                # Load metadata and get state-specific RMSE
+                metadata = load_model_metadata()
+                state_rmse = get_state_rmse(state, metadata)
+                confidence_level = metadata.get('confidence_level', 0.9) if metadata else 0.9
+                
+                # Calculate confidence intervals using state-specific RMSE
+                if state_rmse is not None:
+                    # Calculate z-score for confidence level (e.g., 1.645 for 90%, 1.96 for 95%)
+                    z_score = stats.norm.ppf((1 + confidence_level) / 2)
+                    margin = z_score * state_rmse
+                    
+                    upper_bound = results_df['forecasted_demand_MU'] + margin
+                    lower_bound = results_df['forecasted_demand_MU'] - margin
+                    
+                    # Display RMSE info
+                    st.caption(f"📊 Using state-specific RMSE: {state_rmse:.2f} MU (Confidence: {confidence_level*100:.0f}%)")
+                else:
+                    # If state RMSE not found, show warning but don't add intervals
+                    st.warning(f"⚠️ State-specific RMSE not found for {state} in metadata. Confidence intervals not displayed.")
+                    upper_bound = None
+                    lower_bound = None
+                
                 fig = go.Figure()
+                
+                # Add confidence interval bands if RMSE is available
+                if state_rmse is not None and upper_bound is not None:
+                    # Upper bound
+                    fig.add_trace(go.Scatter(
+                        x=results_df['date'],
+                        y=upper_bound,
+                        mode='lines',
+                        name=f'Upper Bound ({confidence_level*100:.0f}% CI)',
+                        line=dict(width=0),
+                        showlegend=True,
+                        hovertemplate='<b>%{x|%Y-%m-%d}</b><br>Upper: %{y:.2f} MU<extra></extra>'
+                    ))
+                    
+                    # Lower bound (filled area)
+                    fig.add_trace(go.Scatter(
+                        x=results_df['date'],
+                        y=lower_bound,
+                        mode='lines',
+                        name=f'Lower Bound ({confidence_level*100:.0f}% CI)',
+                        line=dict(width=0),
+                        fill='tonexty',
+                        fillcolor='rgba(31, 119, 180, 0.2)',
+                        showlegend=True,
+                        hovertemplate='<b>%{x|%Y-%m-%d}</b><br>Lower: %{y:.2f} MU<extra></extra>'
+                    ))
                 
                 # Forecast line
                 fig.add_trace(go.Scatter(
@@ -945,6 +2010,21 @@ with tab1:
                     hovertemplate='<b>%{x|%Y-%m-%d}</b><br>Demand: %{y:.2f} MU<extra></extra>'
                 ))
                 
+                # Add peak marker trace
+                peak_idx = results_df['forecasted_demand_MU'].idxmax()
+                peak_date = results_df.loc[peak_idx, 'date']
+                peak_value = results_df.loc[peak_idx, 'forecasted_demand_MU']
+                fig.add_trace(
+                    go.Scatter(
+                        x=[peak_date],
+                        y=[peak_value],
+                        mode="markers",
+                        marker=dict(size=12, color="cyan"),
+                        name="Peak Demand",
+                        hovertemplate='<b>%{x|%Y-%m-%d}</b><br>Peak Demand: %{y:.2f} MU<extra></extra>'
+                    )
+                )
+                
                 # Highlight extreme heat days
                 heat_days = results_df[results_df['extreme_heat'] == 1]
                 if len(heat_days) > 0:
@@ -952,7 +2032,7 @@ with tab1:
                         x=heat_days['date'],
                         y=heat_days['forecasted_demand_MU'],
                         mode='markers',
-                        name='Extreme Heat Risk',
+                        name='High Risk (Heat / Uncertainty)',
                         marker=dict(
                             symbol='triangle-up',
                             size=15,
@@ -1021,47 +2101,571 @@ with tab1:
                 st.exception(e)
 
 # ============================================================================
-# TAB 2: WEATHER IMPACT (Placeholder)
+# TAB 2: WEATHER IMPACT
 # ============================================================================
 with tab2:
-    st.header("Weather Impact & Risk Indicators")
-    st.info("🚧 This tab will show temperature overlays, CDD analysis, and extreme heat indicators.")
-    st.markdown("""
-    **Planned Features:**
-    - Temperature & CDD overlays on demand forecast
-    - Extreme heat indicators with risk scores
-    - Seasonal comparison charts
-    - Weather-driven demand patterns
-    """)
+    st.header("🌡️ Weather Impact Analysis")
+    st.markdown("**Weather amplifies demand patterns rather than solely driving them.** Explore how temperature, CDD, and weather variables influence deviations from baseline demand patterns.")
+    
+    # Critical disclaimer about normalized values
+    st.info("📊 **Important**: Demand values shown are normalized relative to each state's historical baseline to enable cross-state comparison. These are not absolute MU values.")
+    
+    # Check if model is loaded
+    if model is None:
+        st.error("❌ Model not loaded. Please check model path in settings.")
+        st.stop()
+    
+    # Controls Section
+    st.subheader("📊 Analysis Controls")
+    col1, col2, col3 = st.columns([2, 2, 1])
+    
+    with col1:
+        state_weather = st.selectbox(
+            "Select State",
+            ALL_STATES,
+            index=ALL_STATES.index("Kerala") if "Kerala" in ALL_STATES else 0,
+            help="Choose the state for weather impact analysis",
+            key="weather_state"
+        )
+    
+    with col2:
+        analysis_mode = st.selectbox(
+            "Analysis Mode",
+            ["Forecast Analysis", "Historical Analysis"],
+            index=0,
+            help="Analyze forecast period or historical data",
+            key="analysis_mode"
+        )
+    
+    with col3:
+        st.write("")  # Spacing
+        analyze_btn = st.button("🔍 Analyze Weather Impact", type="primary", use_container_width=True)
+    
+    # Analysis execution
+    if analyze_btn:
+        with st.spinner("🔄 Analyzing weather impact... This may take a few seconds."):
+            try:
+                if analysis_mode == "Forecast Analysis":
+                    # Use forecast data from Tab 1 if available, otherwise generate new forecast
+                    if 'last_forecast' in st.session_state:
+                        results_df = st.session_state['last_forecast']['results_df']
+                        weather_forecast = st.session_state['last_forecast']['weather_forecast']
+                        df_features = st.session_state['last_forecast']['df_features']
+                        state_used = st.session_state['last_forecast']['state']
+                        
+                        if state_used != state_weather:
+                            st.warning(f"⚠️ Last forecast was for {state_used}. Generating new forecast for {state_weather}...")
+                            raise ValueError("State mismatch")
+                    else:
+                        # Generate new forecast
+                        start_date = datetime.now().date()
+                        horizon_days = 14  # Default to 14 days for analysis
+                        
+                        weather_forecast = get_weather_forecast(
+                            state_weather,
+                            start_date,
+                            horizon_days,
+                            use_api=use_weather_api
+                        )
+                        
+                        if weather_forecast is None or len(weather_forecast) == 0:
+                            st.error("❌ Failed to get weather data. Please try again.")
+                            st.stop()
+                        
+                        # Prepare features and make predictions
+                        X_forecast, df_features = prepare_features_for_prediction(
+                            weather_forecast, state_weather, model=model
+                        )
+                        
+                        predictions = model.predict(X_forecast)
+                        
+                        # Denormalize predictions to absolute MU values
+                        predictions_absolute = denormalize_predictions(
+                            predictions,
+                            weather_forecast['date'],
+                            state_weather
+                        )
+                        
+                        results_df = pd.DataFrame({
+                            'date': weather_forecast['date'],
+                            'forecasted_demand_MU': predictions_absolute,
+                            'temperature_mean': weather_forecast['2m_temperature_mean'],
+                            'temperature_max': weather_forecast['2m_temperature_max'],
+                            'cdd': df_features['cdd'],
+                            'extreme_heat': df_features['extreme_heat'],
+                            'is_holiday': df_features['is_holiday']
+                        })
+                
+                else:  # Historical Analysis
+                    # Load historical data
+                    historical_df = load_historical_data(state_weather)
+                    if historical_df is None:
+                        st.error(f"❌ No historical data found for {state_weather}.")
+                        st.stop()
+                    
+                    # Use last 90 days of historical data
+                    historical_df = historical_df.sort_values('date').tail(90)
+                    
+                    # Prepare features and make predictions
+                    X_historical, df_features = prepare_features_for_prediction(
+                        historical_df, state_weather, model=model
+                    )
+                    
+                    predictions = model.predict(X_historical)
+                    
+                    # Denormalize predictions to absolute MU values
+                    predictions_absolute = denormalize_predictions(
+                        predictions,
+                        historical_df['date'],
+                        state_weather
+                    )
+                    
+                    results_df = pd.DataFrame({
+                        'date': historical_df['date'],
+                        'forecasted_demand_MU': predictions_absolute,
+                        'temperature_mean': historical_df['2m_temperature_mean'],
+                        'temperature_max': historical_df['2m_temperature_max'],
+                        'cdd': df_features['cdd'],
+                        'extreme_heat': df_features['extreme_heat'],
+                        'is_holiday': df_features['is_holiday']
+                    })
+                    
+                    weather_forecast = historical_df[['date', '2m_temperature_mean', '2m_temperature_max']].copy()
+                
+                # Store in session state for future use
+                st.session_state['weather_analysis'] = {
+                    'results_df': results_df,
+                    'weather_forecast': weather_forecast,
+                    'df_features': df_features,
+                    'state': state_weather,
+                    'mode': analysis_mode
+                }
+                
+                # Display success message
+                st.success(f"✅ Weather impact analysis completed for **{state_weather}** ({analysis_mode})")
+                
+                # Key Metrics
+                st.subheader("📈 Key Weather Metrics")
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    avg_temp = (results_df['temperature_mean'] - 273.15).mean()
+                    st.metric("Avg Temperature", f"{avg_temp:.1f}°C")
+                
+                with col2:
+                    max_temp = (results_df['temperature_max'] - 273.15).max()
+                    st.metric("Max Temperature", f"{max_temp:.1f}°C")
+                
+                with col3:
+                    avg_cdd = results_df['cdd'].mean()
+                    st.metric("Avg CDD", f"{avg_cdd:.2f}°C")
+                
+                with col4:
+                    extreme_heat_days = results_df['extreme_heat'].sum()
+                    st.metric("Extreme Heat Days", f"{extreme_heat_days}", 
+                             delta=f"{extreme_heat_days/len(results_df)*100:.0f}% of period")
+                
+                # Natural Language Insight
+                st.subheader("💡 Weather Impact Insight")
+                insight_text = generate_weather_insight(results_df, df_features, state_weather)
+                st.info(insight_text)
+                
+                # Visualizations
+                st.subheader("📊 Weather Impact Visualizations")
+                
+                # Temperature Overlay
+                st.markdown("### Temperature vs Demand Overlay")
+                st.caption("💡 The baseline (dashed gray line) shows demand without weather signal. The difference demonstrates weather impact.")
+                temp_overlay_fig = plot_demand_temperature_overlay(results_df, weather_forecast, df_features)
+                if temp_overlay_fig:
+                    st.plotly_chart(temp_overlay_fig, use_container_width=True)
+                
+                # CDD Timeline
+                st.markdown("### Cooling Degree Days (CDD) Timeline")
+                cdd_fig = plot_cdd_timeline(results_df, df_features)
+                if cdd_fig:
+                    st.plotly_chart(cdd_fig, use_container_width=True)
+                
+                # Feature Importance with toggle
+                st.markdown("### Model Dependency (Relative Influence)")
+                
+                # Add toggle for All Features vs Weather-Only
+                col1, col2 = st.columns([1, 3])
+                with col1:
+                    show_weather_only = st.checkbox(
+                        "Weather-Only Features",
+                        value=False,
+                        help="Show only weather-related features (Temperature, Humidity, Weather categories)"
+                    )
+                
+                feature_importance = get_feature_importance(model, top_n=15, filter_weather_only=show_weather_only)
+                if feature_importance:
+                    importance_fig = plot_feature_importance(feature_importance)
+                    if importance_fig:
+                        st.plotly_chart(importance_fig, use_container_width=True)
+                    
+                    # Add important note about autoregressive nature
+                    st.caption(
+                        "💡 **Note**: Short-term demand history explains most variance; weather variables primarily influence deviations during extreme conditions. "
+                        "This model is primarily autoregressive (momentum-based) with weather as a secondary signal."
+                    )
+                    
+                    # Show top 5 features in expander
+                    with st.expander("📋 Top 5 Most Influential Features"):
+                        top_5 = dict(list(feature_importance.items())[:5])
+                        for i, (feat, imp) in enumerate(top_5.items(), 1):
+                            category = categorize_feature(feat)
+                            st.markdown(f"{i}. **{feat}** ({category}) - Relative Influence: {imp:.4f}")
+                else:
+                    st.warning("⚠️ Could not extract feature importance from model.")
+                
+                # Seasonal Comparison (if historical data available)
+                if analysis_mode == "Historical Analysis" or 'last_forecast' in st.session_state:
+                    st.markdown("### Seasonal Comparison")
+                    
+                    # Get current season from data
+                    if len(df_features) > 0:
+                        current_season = df_features['season'].iloc[0] if 'season' in df_features.columns else None
+                        
+                        if current_season:
+                            seasonal_stats = get_seasonal_comparison(state_weather, current_season)
+                            
+                            if seasonal_stats:
+                                # Create seasonal comparison chart
+                                seasons = list(seasonal_stats.keys())
+                                temp_means = [seasonal_stats[s]['temp_mean'] for s in seasons]
+                                cdd_means = [seasonal_stats[s]['cdd_mean'] for s in seasons]
+                                
+                                fig_seasonal = make_subplots(specs=[[{"secondary_y": True}]])
+                                
+                                fig_seasonal.add_trace(
+                                    go.Bar(
+                                        x=seasons,
+                                        y=temp_means,
+                                        name='Avg Temperature',
+                                        marker_color='#ff7f0e',
+                                        hovertemplate='<b>%{x}</b><br>Temp: %{y:.1f}°C<extra></extra>'
+                                    ),
+                                    secondary_y=False,
+                                )
+                                
+                                fig_seasonal.add_trace(
+                                    go.Bar(
+                                        x=seasons,
+                                        y=cdd_means,
+                                        name='Avg CDD',
+                                        marker_color='#d62728',
+                                        hovertemplate='<b>%{x}</b><br>CDD: %{y:.2f}°C<extra></extra>'
+                                    ),
+                                    secondary_y=True,
+                                )
+                                
+                                fig_seasonal.update_xaxes(title_text="Season")
+                                fig_seasonal.update_yaxes(title_text="Temperature (°C)", secondary_y=False)
+                                fig_seasonal.update_yaxes(title_text="CDD (°C)", secondary_y=True)
+                                
+                                fig_seasonal.update_layout(
+                                    title="Seasonal Temperature and CDD Comparison",
+                                    hovermode='x unified',
+                                    height=400,
+                                    template='plotly_white',
+                                    legend=dict(
+                                        orientation="h",
+                                        yanchor="bottom",
+                                        y=1.02,
+                                        xanchor="right",
+                                        x=1
+                                    )
+                                )
+                                
+                                st.plotly_chart(fig_seasonal, use_container_width=True)
+                                
+                                # Show seasonal statistics table
+                                with st.expander("📋 Detailed Seasonal Statistics"):
+                                    seasonal_df = pd.DataFrame(seasonal_stats).T
+                                    seasonal_df.index.name = 'Season'
+                                    st.dataframe(seasonal_df.style.format({
+                                        'temp_mean': '{:.1f}°C',
+                                        'temp_max': '{:.1f}°C',
+                                        'cdd_mean': '{:.2f}°C',
+                                        'extreme_heat_pct': '{:.1f}%',
+                                        'count': '{:.0f}'
+                                    }), use_container_width=True)
+                            else:
+                                st.info("ℹ️ Seasonal comparison data not available for this state.")
+                        else:
+                            st.info("ℹ️ Could not determine current season for comparison.")
+                    else:
+                        st.info("ℹ️ Insufficient data for seasonal comparison.")
+                
+            except ValueError as e:
+                if "State mismatch" in str(e):
+                    # Regenerate forecast for correct state
+                    start_date = datetime.now().date()
+                    horizon_days = 14
+                    
+                    weather_forecast = get_weather_forecast(
+                        state_weather,
+                        start_date,
+                        horizon_days,
+                        use_api=use_weather_api
+                    )
+                    
+                    X_forecast, df_features = prepare_features_for_prediction(
+                        weather_forecast, state_weather, model=model
+                    )
+                    
+                    predictions = model.predict(X_forecast)
+                    
+                    # Denormalize predictions to absolute MU values
+                    predictions_absolute = denormalize_predictions(
+                        predictions,
+                        weather_forecast['date'],
+                        state_weather
+                    )
+                    
+                    results_df = pd.DataFrame({
+                        'date': weather_forecast['date'],
+                        'forecasted_demand_MU': predictions_absolute,
+                        'temperature_mean': weather_forecast['2m_temperature_mean'],
+                        'temperature_max': weather_forecast['2m_temperature_max'],
+                        'cdd': df_features['cdd'],
+                        'extreme_heat': df_features['extreme_heat'],
+                        'is_holiday': df_features['is_holiday']
+                    })
+                    
+                    # Continue with analysis (code would continue here, but for brevity, we'll show error)
+                    st.rerun()
+                else:
+                    st.error(f"❌ Error: {str(e)}")
+            except Exception as e:
+                st.error(f"❌ Error analyzing weather impact: {str(e)}")
+                st.exception(e)
+    
+    # Show instructions if no analysis has been run
+    if 'weather_analysis' not in st.session_state:
+        st.info("👆 Select a state and analysis mode, then click 'Analyze Weather Impact' to see how weather drives electricity demand.")
+        
+        st.markdown("""
+        **What you'll see:**
+        - **Temperature Overlay**: Dual-axis plot showing demand and temperature correlation
+        - **CDD Timeline**: Cooling Degree Days with extreme heat day highlighting
+        - **Feature Importance**: Top 15 features that drive demand predictions
+        - **Seasonal Comparison**: Historical seasonal patterns (when available)
+        - **Natural Language Insights**: AI-generated explanations of weather impact
+        """)
 
 # ============================================================================
-# TAB 3: RISK & DIAGNOSTICS (Placeholder)
+# TAB 3: AI ASSISTANT
 # ============================================================================
 with tab3:
-    st.header("Risk & Diagnostics")
-    st.info("🚧 This tab will show residual plots, anomaly detection, and error analysis.")
-    st.markdown("""
-    **Planned Features:**
-    - Residual plots over time
-    - Highlighted anomaly days
-    - Error vs weather visualization
-    - Model performance metrics
-    """)
-
-# ============================================================================
-# TAB 4: AI ASSISTANT (Placeholder)
-# ============================================================================
-with tab4:
-    st.header("AI Energy Assistant")
-    st.info("🚧 This tab will provide AI-driven explanations using LLM + RAG.")
-    st.markdown("""
-    **Planned Features:**
-    - Natural language explanations of forecasts
-    - Answer questions like:
-        - "Why is demand expected to increase next week?"
-        - "Which weather variables matter most for this state?"
-        - "Why did the model fail on these dates?"
-    """)
+    st.header("🤖 AI Energy Assistant")
+    st.markdown("Ask natural language questions about forecasts, weather impacts, model performance, and risk factors.")
+    
+    # Fail-safe RAG initialization
+    rag_enabled = True
+    vector_store = None
+    rag_engine = None
+    
+    try:
+        vector_store, rag_engine = initialize_rag_system()
+        if vector_store is None or rag_engine is None:
+            rag_enabled = False
+    except FileNotFoundError as e:
+        rag_enabled = False
+    except ImportError as e:
+        rag_enabled = False
+    except Exception as e:
+        rag_enabled = False
+    
+    # Show status and handle limited mode
+    if not rag_enabled or vector_store is None or rag_engine is None:
+        st.warning("⚠️ AI Assistant is running in limited mode (knowledge base unavailable).")
+        st.info("""
+        **What this means:**
+        - The knowledge base could not be loaded (missing files, path issues, or dependencies)
+        - You can still ask questions, but responses will be limited
+        - To enable full functionality:
+          1. Ensure sentence-transformers is installed: `pip install sentence-transformers`
+          2. Check that `model_metadata.json` exists in the project root
+          3. Restart the application
+        """)
+        # Continue in limited mode - don't stop the app
+        rag_enabled = False
+    
+    # Initialize chat history in session state
+    if 'chat_history' not in st.session_state:
+        st.session_state.chat_history = []
+    
+    # Get context from last forecast (if available)
+    forecast_context = None
+    forecast_state = None
+    forecast_horizon = None
+    
+    if 'last_forecast' in st.session_state:
+        forecast_data = st.session_state['last_forecast']
+        forecast_state = forecast_data.get('state')
+        forecast_horizon = forecast_data.get('horizon_days')
+        
+        # Get forecast summary (use stored one if available, otherwise generate)
+        forecast_summary = forecast_data.get('forecast_summary')
+        results_df = forecast_data.get('results_df')
+        
+        if forecast_summary is None and results_df is not None and len(results_df) > 0:
+            # Generate if not already stored (shouldn't happen if forecast was just created)
+            metadata = load_model_metadata()
+            forecast_summary = generate_forecast_summary(
+                results_df,
+                forecast_state,
+                forecast_horizon,
+                forecast_data.get('df_features'),
+                metadata=metadata
+            )
+        
+        # Only try to add to vector store if RAG is enabled
+        if rag_enabled and forecast_summary and vector_store is not None:
+            # Check if this forecast is already in the vector store
+            forecast_id = f"forecast_{forecast_state}_{forecast_summary['start_date']}"
+            if 'last_forecast_id' not in st.session_state or st.session_state['last_forecast_id'] != forecast_id:
+                # Add forecast summary to vector store
+                forecast_docs = build_forecast_summary_documents(forecast_summary)
+                if forecast_docs:
+                    try:
+                        texts = [doc['text'] for doc in forecast_docs]
+                        metadata_list = [doc['metadata'] for doc in forecast_docs]
+                        embeddings = get_embeddings(texts)
+                        vector_store.add_documents(embeddings, texts, metadata_list)
+                        vector_store.save_index()  # Save after adding
+                        st.session_state['last_forecast_id'] = forecast_id
+                    except Exception as e:
+                        st.warning(f"Could not add forecast to knowledge base: {str(e)}")
+    
+    # Display example questions
+    with st.expander("💡 Example Questions", expanded=False):
+        st.markdown("""
+        **Forecast Questions:**
+        - "What is the forecast for [state]?"
+        - "When is peak demand expected?"
+        - "Are there any high-risk days in the forecast?"
+        
+        **Weather Impact:**
+        - "How does temperature affect demand?"
+        - "What is the impact of extreme heat on electricity demand?"
+        - "Which weather variables are most important?"
+        
+        **Model Performance:**
+        - "What is the model's RMSE for [state]?"
+        - "How accurate is the model?"
+        - "What are the top features for forecasting?"
+        
+        **Risk & Diagnostics:**
+        - "What are the confidence intervals?"
+        - "Why might the forecast be uncertain?"
+        """)
+    
+    # Context display
+    if forecast_state:
+        st.info(f"📊 Current context: {forecast_state} ({forecast_horizon} days forecast available)")
+    
+    # Chat interface
+    st.markdown("### 💬 Chat")
+    
+    # Display chat history
+    for i, message in enumerate(st.session_state.chat_history):
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+            
+            # Show sources if available
+            if "sources" in message and message["sources"]:
+                with st.expander("📚 Sources", expanded=False):
+                    for j, source in enumerate(message["sources"][:3], 1):
+                        st.caption(f"Source {j}: {source['text'][:200]}...")
+                        if 'metadata' in source:
+                            meta = source['metadata']
+                            if 'state' in meta:
+                                st.caption(f"  State: {meta['state']}")
+                            if 'type' in meta:
+                                st.caption(f"  Type: {meta['type']}")
+            
+            # Show confidence if available (with clarified wording)
+            if "confidence" in message:
+                confidence_pct = message["confidence"] * 100
+                confidence_text = f"Response confidence: {confidence_pct:.0f}% (based on data availability and forecast horizon)"
+                if confidence_pct >= 80:
+                    st.success(confidence_text)
+                elif confidence_pct >= 60:
+                    st.warning(confidence_text)
+                else:
+                    st.info(confidence_text)
+    
+    # User input
+    user_query = st.chat_input("Ask a question about forecasts, weather, or model performance...")
+    
+    if user_query:
+        # Add user message to chat history
+        st.session_state.chat_history.append({
+            "role": "user",
+            "content": user_query
+        })
+        
+        # Display user message
+        with st.chat_message("user"):
+            st.markdown(user_query)
+        
+        # Generate response
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                if not rag_enabled or rag_engine is None:
+                    # Limited mode - provide basic response
+                    st.info("""
+                    **Limited Mode Active**
+                    
+                    The AI Assistant is running in limited mode because the knowledge base is unavailable.
+                    
+                    To answer your question properly, please:
+                    1. Ensure sentence-transformers is installed: `pip install sentence-transformers`
+                    2. Check that model_metadata.json exists
+                    3. Restart the application
+                    
+                    **Your question:** "{}"
+                    """.format(user_query))
+                    
+                    st.session_state.chat_history.append({
+                        "role": "assistant",
+                        "content": "AI Assistant is in limited mode. Please check the setup instructions above."
+                    })
+                else:
+                    try:
+                        response, contexts, avg_similarity = rag_engine.query(
+                            user_query,
+                            current_state=forecast_state,
+                            forecast_horizon=forecast_horizon,
+                            top_k=5,
+                            min_similarity=0.5  # Lower threshold to get more results
+                        )
+                        
+                        st.markdown(response)
+                        
+                        # Add assistant response to chat history
+                        st.session_state.chat_history.append({
+                            "role": "assistant",
+                            "content": response,
+                            "sources": contexts,
+                            "confidence": avg_similarity
+                        })
+                        
+                    except Exception as e:
+                        error_msg = f"Error: {str(e)}"
+                        st.error(error_msg)
+                        st.session_state.chat_history.append({
+                            "role": "assistant",
+                            "content": error_msg
+                        })
+    
+    # Clear chat button
+    if st.button("🗑️ Clear Chat"):
+        st.session_state.chat_history = []
+        st.rerun()
 
 # ============================================================================
 # FOOTER

@@ -1,2 +1,5 @@
 data/
 .cursor/
+.env
+__pycache__/
+*.pyc

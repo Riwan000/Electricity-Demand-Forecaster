@@ -27,3 +27,8 @@ holidays>=0.34
 # Optional: For advanced UTCI calculations (if needed)
 # pythermalcomfort>=0.5.0
 
+# RAG and AI Dependencies
+faiss-cpu>=1.7.4
+openai>=1.0.0
+python-dotenv>=1.0.0
+sentence-transformers>=2.2.0
