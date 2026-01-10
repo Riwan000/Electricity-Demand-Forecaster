@@ -1881,20 +1881,54 @@ with tab1:
                     weather_forecast, state, model=model
                 )
                 
-                # Make predictions using the model
-                predictions = model.predict(X_forecast)
+                # Make predictions using the model (model outputs log-space predictions)
+                pred_log = model.predict(X_forecast)
                 
-                # Denormalize predictions to absolute MU values
-                predictions_absolute = denormalize_predictions(
-                    predictions, 
-                    weather_forecast['date'], 
-                    state
-                )
+                # #region agent log
+                import json
+                log_path = r"c:\Users\LEGION\Desktop\Projects\Electricity-Demand-Forecaster\.cursor\debug.log"
+                with open(log_path, 'a', encoding='utf-8') as f:
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "app.py:1885", "message": "Model predictions (log-space)", "data": {"pred_log_mean": float(np.mean(pred_log)), "pred_log_min": float(np.min(pred_log)), "pred_log_max": float(np.max(pred_log)), "pred_log_shape": list(pred_log.shape)}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
+                # #endregion
                 
-                # Create results dataframe
+                # Fix 1: Convert from log space to raw MU using expm1
+                pred_mu = np.expm1(pred_log)
+                
+                # #region agent log
+                with open(log_path, 'a', encoding='utf-8') as f:
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "app.py:1888", "message": "After expm1 (processed space)", "data": {"pred_mu_mean": float(np.mean(pred_mu)), "pred_mu_min": float(np.min(pred_mu)), "pred_mu_max": float(np.max(pred_mu))}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
+                # #endregion
+                
+                # #region agent log
+                historical_demand = load_historical_demand(state)
+                baseline = None
+                if historical_demand is not None and len(historical_demand) > 0:
+                    if len(historical_demand) >= 30:
+                        baseline = float(historical_demand['actual_demand_MU'].tail(30).mean())
+                    else:
+                        baseline = float(historical_demand['actual_demand_MU'].mean())
+                with open(log_path, 'a', encoding='utf-8') as f:
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "app.py:1890", "message": "Baseline calculation", "data": {"baseline": baseline, "historical_demand_len": len(historical_demand) if historical_demand is not None else 0, "state": state}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
+                # #endregion
+                
+                # #region agent log
+                if baseline is not None:
+                    pred_mu_with_baseline = pred_mu * baseline
+                    with open(log_path, 'a', encoding='utf-8') as f:
+                        f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "app.py:1891", "message": "After baseline multiplication", "data": {"pred_mu_baseline_mean": float(np.mean(pred_mu_with_baseline)), "pred_mu_baseline_min": float(np.min(pred_mu_with_baseline)), "pred_mu_baseline_max": float(np.max(pred_mu_with_baseline))}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
+                # #endregion
+                
+                # #region agent log
+                historical_demand = load_historical_demand(state)
+                denorm_result = denormalize_predictions(pred_log, weather_forecast['date'], state, historical_demand)
+                with open(log_path, 'a', encoding='utf-8') as f:
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "post-fix", "hypothesisId": "E", "location": "app.py:1922", "message": "denormalize_predictions result", "data": {"denorm_mean": float(np.mean(denorm_result)), "denorm_min": float(np.min(denorm_result)), "denorm_max": float(np.max(denorm_result))}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
+                # #endregion
+                
+                # Create results dataframe with absolute MU values (using denormalize_predictions)
                 results_df = pd.DataFrame({
                     'date': weather_forecast['date'],
-                    'forecasted_demand_MU': predictions_absolute,  # Use absolute predictions
+                    'forecasted_demand_MU': denorm_result,  # Absolute MU values after baseline multiplication
                     'temperature_mean': weather_forecast['2m_temperature_mean'],
                     'temperature_max': weather_forecast['2m_temperature_max'],
                     'cdd': df_features['cdd'],
@@ -1922,10 +1956,23 @@ with tab1:
                     'forecast_summary': forecast_summary  # Include locked summary
                 }
                 
+                # #region agent log
+                with open(log_path, 'a', encoding='utf-8') as f:
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "post-fix", "hypothesisId": "A", "location": "app.py:1959", "message": "Final forecasted_demand_MU after fix (should be > 10)", "data": {"mean": float(results_df['forecasted_demand_MU'].mean()), "min": float(results_df['forecasted_demand_MU'].min()), "max": float(results_df['forecasted_demand_MU'].max())}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
+                # #endregion
+                
+                # Fix 5: Defensive assertion to catch model-space leaks
+                assert results_df['forecasted_demand_MU'].mean() > 10, \
+                    f"Forecast values look like model-space, not MU. Mean: {results_df['forecasted_demand_MU'].mean():.2f}"
+                
+                # Sanity check: Print forecast range
+                st.write("🔍 **Forecast range (MU):**", 
+                        f"{results_df['forecasted_demand_MU'].min():.2f} - {results_df['forecasted_demand_MU'].max():.2f} MU")
+                
                 # Display success message
                 st.success(f"✅ Forecast generated successfully for **{state}** ({horizon_days} days)")
                 
-                # Key metrics
+                # Fix 3: Summary metrics must aggregate raw MU only
                 st.subheader("📈 Forecast Summary")
                 col1, col2, col3, col4 = st.columns(4)
                 
@@ -1954,12 +2001,18 @@ with tab1:
                 state_rmse = get_state_rmse(state, metadata)
                 confidence_level = metadata.get('confidence_level', 0.9) if metadata else 0.9
                 
-                # Calculate confidence intervals using state-specific RMSE
+                # Fix 2: Calculate confidence intervals in raw MU space (not log space)
                 if state_rmse is not None:
+                    # state_rmse is already in raw MU space from metadata
                     # Calculate z-score for confidence level (e.g., 1.645 for 90%, 1.96 for 95%)
                     z_score = stats.norm.ppf((1 + confidence_level) / 2)
-                    margin = z_score * state_rmse
+                    # RMSE from metadata is already in MU space, apply directly
+                    rmse_mu = state_rmse
+                    # Optional widening factor for forecast uncertainty (can be 1.0 for no widening)
+                    widening_factor = 1.0
+                    margin = z_score * rmse_mu * widening_factor
                     
+                    # Confidence intervals in raw MU space
                     upper_bound = results_df['forecasted_demand_MU'] + margin
                     lower_bound = results_df['forecasted_demand_MU'] - margin
                     
@@ -2177,18 +2230,14 @@ with tab2:
                             weather_forecast, state_weather, model=model
                         )
                         
-                        predictions = model.predict(X_forecast)
-                        
-                        # Denormalize predictions to absolute MU values
-                        predictions_absolute = denormalize_predictions(
-                            predictions,
-                            weather_forecast['date'],
-                            state_weather
-                        )
+                        # Convert from log space to absolute MU using denormalize_predictions
+                        pred_log = model.predict(X_forecast)
+                        historical_demand = load_historical_demand(state_weather)
+                        pred_mu = denormalize_predictions(pred_log, weather_forecast['date'], state_weather, historical_demand)
                         
                         results_df = pd.DataFrame({
                             'date': weather_forecast['date'],
-                            'forecasted_demand_MU': predictions_absolute,
+                            'forecasted_demand_MU': pred_mu,  # Absolute MU values after baseline multiplication
                             'temperature_mean': weather_forecast['2m_temperature_mean'],
                             'temperature_max': weather_forecast['2m_temperature_max'],
                             'cdd': df_features['cdd'],
@@ -2211,18 +2260,14 @@ with tab2:
                         historical_df, state_weather, model=model
                     )
                     
-                    predictions = model.predict(X_historical)
-                    
-                    # Denormalize predictions to absolute MU values
-                    predictions_absolute = denormalize_predictions(
-                        predictions,
-                        historical_df['date'],
-                        state_weather
-                    )
+                    # Convert from log space to absolute MU using denormalize_predictions
+                    pred_log = model.predict(X_historical)
+                    historical_demand = load_historical_demand(state_weather)
+                    pred_mu = denormalize_predictions(pred_log, historical_df['date'], state_weather, historical_demand)
                     
                     results_df = pd.DataFrame({
                         'date': historical_df['date'],
-                        'forecasted_demand_MU': predictions_absolute,
+                        'forecasted_demand_MU': pred_mu,  # Absolute MU values after baseline multiplication
                         'temperature_mean': historical_df['2m_temperature_mean'],
                         'temperature_max': historical_df['2m_temperature_max'],
                         'cdd': df_features['cdd'],
@@ -2415,18 +2460,14 @@ with tab2:
                         weather_forecast, state_weather, model=model
                     )
                     
-                    predictions = model.predict(X_forecast)
-                    
-                    # Denormalize predictions to absolute MU values
-                    predictions_absolute = denormalize_predictions(
-                        predictions,
-                        weather_forecast['date'],
-                        state_weather
-                    )
+                    # Convert from log space to absolute MU using denormalize_predictions
+                    pred_log = model.predict(X_forecast)
+                    historical_demand = load_historical_demand(state_weather)
+                    pred_mu = denormalize_predictions(pred_log, weather_forecast['date'], state_weather, historical_demand)
                     
                     results_df = pd.DataFrame({
                         'date': weather_forecast['date'],
-                        'forecasted_demand_MU': predictions_absolute,
+                        'forecasted_demand_MU': pred_mu,  # Absolute MU values after baseline multiplication
                         'temperature_mean': weather_forecast['2m_temperature_mean'],
                         'temperature_max': weather_forecast['2m_temperature_max'],
                         'cdd': df_features['cdd'],
