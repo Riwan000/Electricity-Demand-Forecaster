@@ -344,14 +344,6 @@ def load_historical_demand(state_name):
         '../data/14983362/daily_energy_met_MU.csv'
     ]
     
-    # #region agent log
-    import json
-    log_path_debug = os.path.join(os.path.dirname(__file__), ".cursor", "debug.log")
-    os.makedirs(os.path.dirname(log_path_debug), exist_ok=True)
-    with open(log_path_debug, 'a', encoding='utf-8') as f:
-        f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "D", "location": "app.py:load_historical_demand", "message": "Checking file paths", "data": {"state_name": state_name, "possible_paths": possible_paths, "paths_exist": [os.path.exists(p) for p in possible_paths], "cwd": os.getcwd(), "script_dir": os.path.dirname(__file__) if '__file__' in globals() else "unknown"}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-    # #endregion
-    
     for file_path in possible_paths:
         if os.path.exists(file_path):
             try:
@@ -381,17 +373,9 @@ def load_historical_demand(state_name):
                 demand_df = demand_df.dropna()
                 
                 if len(demand_df) > 0:
-                    # #region agent log
-                    with open(log_path_debug, 'a', encoding='utf-8') as f:
-                        f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "D", "location": "app.py:load_historical_demand:success", "message": "Successfully loaded historical demand", "data": {"file_path": file_path, "demand_df_len": len(demand_df), "column_name": column_name}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-                    # #endregion
                     return demand_df
                     
             except Exception as e:
-                # #region agent log
-                with open(log_path_debug, 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "D", "location": "app.py:load_historical_demand:error", "message": "Error loading demand data", "data": {"file_path": file_path, "error": str(e)}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-                # #endregion
                 st.warning(f"Error loading demand data from {file_path}: {str(e)}")
                 continue
     
@@ -464,41 +448,15 @@ def denormalize_predictions(predictions, dates, state_name, historical_demand=No
     Returns:
         np.array: Absolute predictions in MU
     """
-    # #region agent log
-    import json
-    import os
-    log_path = os.path.join(os.path.dirname(__file__), ".cursor", "debug.log")
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    with open(log_path, 'a', encoding='utf-8') as f:
-        f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "C", "location": "app.py:denormalize_predictions:entry", "message": "denormalize_predictions called", "data": {"state_name": state_name, "historical_demand_provided": historical_demand is not None, "dates_len": len(dates) if dates is not None else 0}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-    # #endregion
-    
     # First, convert from log space to processed space (expm1 reverses log1p)
     predictions_processed = np.expm1(predictions)
     
     if historical_demand is None:
         historical_demand = load_historical_demand(state_name)
     
-    # #region agent log
-    with open(log_path, 'a', encoding='utf-8') as f:
-        f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "D", "location": "app.py:denormalize_predictions:after_load", "message": "After load_historical_demand", "data": {"historical_demand_is_none": historical_demand is None, "historical_demand_len": len(historical_demand) if historical_demand is not None else 0}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-    # #endregion
-    
     if historical_demand is None or len(historical_demand) == 0:
-        # #region agent log
-        with open(log_path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "D", "location": "app.py:denormalize_predictions:no_historical", "message": "No historical demand - using fallback baseline", "data": {"predictions_processed_mean": float(np.mean(predictions_processed)), "state_name": state_name}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-        # #endregion
-        
         # FIX: Use fallback baseline when historical data unavailable (deployment scenario)
         fallback_baseline = get_fallback_baseline(state_name)
-        
-        # #region agent log
-        with open(log_path, 'a', encoding='utf-8') as f:
-            result = predictions_processed * fallback_baseline
-            f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "D", "location": "app.py:denormalize_predictions:fallback_applied", "message": "Fallback baseline applied", "data": {"fallback_baseline": fallback_baseline, "result_mean": float(np.mean(result)), "result_min": float(np.min(result)), "result_max": float(np.max(result))}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-        # #endregion
-        
         return predictions_processed * fallback_baseline
     
     # For future dates (forecasting), use most recent 30-day baseline
@@ -507,11 +465,6 @@ def denormalize_predictions(predictions, dates, state_name, historical_demand=No
         first_date = pd.Timestamp(dates.iloc[0])
         current_date = pd.Timestamp.now()
         
-        # #region agent log
-        with open(log_path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "B", "location": "app.py:denormalize_predictions:date_check", "message": "Date comparison in denormalize", "data": {"first_date": str(first_date), "current_date": str(current_date), "first_date_gt_current": bool(first_date > current_date), "first_date_type": str(type(first_date)), "current_date_type": str(type(current_date))}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-        # #endregion
-        
         if first_date > current_date:
             # Forecasting future dates - use recent baseline
             if len(historical_demand) >= 30:
@@ -519,20 +472,11 @@ def denormalize_predictions(predictions, dates, state_name, historical_demand=No
             elif len(historical_demand) > 0:
                 baseline = historical_demand['actual_demand_MU'].mean()
             else:
-                # #region agent log
-                with open(log_path, 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "C", "location": "app.py:denormalize_predictions:no_baseline", "message": "No baseline in historical_demand - using fallback", "data": {"predictions_processed_mean": float(np.mean(predictions_processed)), "state_name": state_name}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-                # #endregion
                 # FIX: Use fallback baseline when historical_demand exists but has no data
                 fallback_baseline = get_fallback_baseline(state_name)
                 return predictions_processed * fallback_baseline
             
-            # #region agent log
-            result = predictions_processed * baseline
-            with open(log_path, 'a', encoding='utf-8') as f:
-                f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "C", "location": "app.py:denormalize_predictions:future_dates", "message": "Future dates path - baseline applied", "data": {"baseline": float(baseline), "result_mean": float(np.mean(result)), "result_min": float(np.min(result)), "result_max": float(np.max(result))}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-            # #endregion
-            return result
+            return predictions_processed * baseline
         else:
             # Historical dates - calculate baseline for each date
             baselines = dates.apply(lambda d: calculate_state_30d_baseline(historical_demand, d))
@@ -541,17 +485,8 @@ def denormalize_predictions(predictions, dates, state_name, historical_demand=No
                 mean_baseline = baselines.mean() if baselines.notna().any() else historical_demand['actual_demand_MU'].mean()
                 baselines = baselines.fillna(mean_baseline)
             
-            # #region agent log
-            result = predictions_processed * baselines.values
-            with open(log_path, 'a', encoding='utf-8') as f:
-                f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "C", "location": "app.py:denormalize_predictions:historical_dates", "message": "Historical dates path - baselines applied", "data": {"baselines_mean": float(baselines.mean()), "result_mean": float(np.mean(result)), "result_min": float(np.min(result)), "result_max": float(np.max(result))}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-            # #endregion
-            return result
+            return predictions_processed * baselines.values
     else:
-        # #region agent log
-        with open(log_path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "C", "location": "app.py:denormalize_predictions:no_dates", "message": "No dates provided - using fallback baseline", "data": {"predictions_processed_mean": float(np.mean(predictions_processed)), "state_name": state_name}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-        # #endregion
         # FIX: No dates provided - use fallback baseline instead of returning processed predictions
         fallback_baseline = get_fallback_baseline(state_name)
         return predictions_processed * fallback_baseline
@@ -860,18 +795,21 @@ def get_weather_forecast(state_name, start_date, num_days, use_api=True):
 # FEATURE ENGINEERING FUNCTIONS
 # ============================================================================
 
-def engineer_features(df, state_name):
+def engineer_features(df, state_name, metadata=None):
     """
     Engineer features exactly as done in training.
-    
+
     This function must match your notebook's feature engineering pipeline exactly.
     It creates calendar features, holiday flags, cooling degree days, state/region
     encodings, and other derived features that the model expects.
-    
+
     Parameters:
         df (pd.DataFrame): Weather data with date column
         state_name (str): Name of the state (for state encoding)
-        
+        metadata (dict, optional): model_metadata.json contents. Used to read
+            train-derived thresholds (cdd_threshold_kelvin,
+            extreme_heat_threshold_kelvin) so inference matches training exactly.
+
     Returns:
         pd.DataFrame: Data with engineered features added
     """
@@ -930,14 +868,21 @@ def engineer_features(df, state_name):
     df['states'] = normalized_state
     df['region'] = state_to_region.get(state_name, 'nr')
     
-    # Cooling Degree Days (CDD) - using threshold from notebook
-    threshold_temp = 297.15  # 24°C in Kelvin (from notebook: (temp_mean - 24).clip(lower=0))
+    # Cooling Degree Days (CDD)
+    # Use train-derived threshold from metadata (Bug fix: must match training exactly)
+    threshold_temp = (metadata.get('cdd_threshold_kelvin', 297.15)
+                      if metadata else 297.15)
     df['cdd'] = np.maximum(0, df['2m_temperature_mean'] - threshold_temp)
-    df['CDD'] = df['cdd']  # Alternative name
-    
-    # Extreme heat flag (using quantile-based threshold approach from notebook)
-    # For forecasting, use a fixed threshold based on typical 95th percentile
-    heat_threshold = df['2m_temperature_mean'].quantile(0.95) if len(df) > 0 else 305.0
+    df['CDD'] = df['cdd']
+
+    # Extreme heat flag
+    # Use train-derived threshold from metadata so the flag fires at the same
+    # temperature it did during training (Bug fix: recomputing on a 7-14 row
+    # forecast window gives a completely different threshold than the training 95th pct)
+    if metadata and 'extreme_heat_threshold_kelvin' in metadata:
+        heat_threshold = metadata['extreme_heat_threshold_kelvin']
+    else:
+        heat_threshold = df['2m_temperature_mean'].quantile(0.95) if len(df) > 0 else 305.0
     df['extreme_heat'] = (df['2m_temperature_mean'] > heat_threshold).astype(int)
     df['extreme_heat_flag'] = df['extreme_heat'].astype(int)
     
@@ -996,7 +941,7 @@ def engineer_features(df, state_name):
     return df
 
 
-def prepare_features_for_prediction(weather_df, state_name, model=None):
+def prepare_features_for_prediction(weather_df, state_name, model=None, metadata=None):
     """
     Prepare the exact feature set the model expects.
     
@@ -1013,7 +958,7 @@ def prepare_features_for_prediction(weather_df, state_name, model=None):
             - df_features: Full dataframe with all engineered features
     """
     # Engineer features
-    df_features = engineer_features(weather_df, state_name)
+    df_features = engineer_features(weather_df, state_name, metadata=metadata)
     
     # Get all categorical columns for one-hot encoding
     categorical_cols = ['states', 'region', 'season', 'holiday_name']
@@ -1858,6 +1803,7 @@ with st.sidebar:
     
     # Model status
     model = load_model()
+    metadata = load_model_metadata()
     if model:
         st.success("✅ Model loaded successfully")
         st.caption("XGBoost model ready for predictions")
@@ -1969,42 +1915,15 @@ with tab1:
                 
                 # Prepare features for model (pass model to get exact feature order)
                 X_forecast, df_features = prepare_features_for_prediction(
-                    weather_forecast, state, model=model
+                    weather_forecast, state, model=model, metadata=metadata
                 )
-                
+
                 # Make predictions using the model (model outputs log-space predictions)
                 pred_log = model.predict(X_forecast)
                 
-                # #region agent log
-                import json
-                import os
-                log_path = os.path.join(os.path.dirname(__file__), ".cursor", "debug.log")
-                os.makedirs(os.path.dirname(log_path), exist_ok=True)
-                with open(log_path, 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "A", "location": "app.py:1885", "message": "Model predictions (log-space)", "data": {"pred_log_mean": float(np.mean(pred_log)), "pred_log_shape": list(pred_log.shape), "state": state}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-                # #endregion
-                
                 # Convert from log space to absolute MU using denormalize_predictions
                 historical_demand = load_historical_demand(state)
-                
-                # #region agent log
-                with open(log_path, 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "D", "location": "app.py:1889", "message": "Historical demand load result", "data": {"historical_demand_is_none": historical_demand is None, "historical_demand_len": len(historical_demand) if historical_demand is not None else 0, "state": state}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-                # #endregion
-                
-                # #region agent log
-                first_date = pd.Timestamp(weather_forecast['date'].iloc[0]) if len(weather_forecast) > 0 else None
-                current_date = pd.Timestamp.now()
-                with open(log_path, 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "B", "location": "app.py:1890", "message": "Date comparison check", "data": {"first_date": str(first_date) if first_date is not None else None, "current_date": str(current_date), "first_date_gt_current": bool(first_date > current_date) if first_date is not None else None, "dates_len": len(weather_forecast['date'])}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-                # #endregion
-                
                 denorm_result = denormalize_predictions(pred_log, weather_forecast['date'], state, historical_demand)
-                
-                # #region agent log
-                with open(log_path, 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "C", "location": "app.py:1891", "message": "denormalize_predictions result", "data": {"denorm_mean": float(np.mean(denorm_result)), "denorm_min": float(np.min(denorm_result)), "denorm_max": float(np.max(denorm_result)), "denorm_shape": list(denorm_result.shape)}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-                # #endregion
                 
                 # Create results dataframe with absolute MU values
                 results_df = pd.DataFrame({
@@ -2036,15 +1955,6 @@ with tab1:
                     'horizon_days': horizon_days,
                     'forecast_summary': forecast_summary  # Include locked summary
                 }
-                
-                # #region agent log
-                import json
-                import os
-                log_path = os.path.join(os.path.dirname(__file__), ".cursor", "debug.log")
-                os.makedirs(os.path.dirname(log_path), exist_ok=True)
-                with open(log_path, 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "deployment-debug", "hypothesisId": "A", "location": "app.py:1992", "message": "Final forecasted_demand_MU before assertion", "data": {"mean": float(results_df['forecasted_demand_MU'].mean()), "min": float(results_df['forecasted_demand_MU'].min()), "max": float(results_df['forecasted_demand_MU'].max()), "values_sample": [float(x) for x in results_df['forecasted_demand_MU'].head(3).tolist()]}, "timestamp": int(datetime.now().timestamp() * 1000)}) + "\n")
-                # #endregion
                 
                 # Fix 5: Defensive assertion to catch model-space leaks
                 assert results_df['forecasted_demand_MU'].mean() > 10, \
@@ -2312,9 +2222,9 @@ with tab2:
                         
                         # Prepare features and make predictions
                         X_forecast, df_features = prepare_features_for_prediction(
-                            weather_forecast, state_weather, model=model
+                            weather_forecast, state_weather, model=model, metadata=metadata
                         )
-                        
+
                         # Convert from log space to absolute MU using denormalize_predictions
                         pred_log = model.predict(X_forecast)
                         historical_demand = load_historical_demand(state_weather)
@@ -2342,9 +2252,9 @@ with tab2:
                     
                     # Prepare features and make predictions
                     X_historical, df_features = prepare_features_for_prediction(
-                        historical_df, state_weather, model=model
+                        historical_df, state_weather, model=model, metadata=metadata
                     )
-                    
+
                     # Convert from log space to absolute MU using denormalize_predictions
                     pred_log = model.predict(X_historical)
                     historical_demand = load_historical_demand(state_weather)
@@ -2542,9 +2452,9 @@ with tab2:
                     )
                     
                     X_forecast, df_features = prepare_features_for_prediction(
-                        weather_forecast, state_weather, model=model
+                        weather_forecast, state_weather, model=model, metadata=metadata
                     )
-                    
+
                     # Convert from log space to absolute MU using denormalize_predictions
                     pred_log = model.predict(X_forecast)
                     historical_demand = load_historical_demand(state_weather)
