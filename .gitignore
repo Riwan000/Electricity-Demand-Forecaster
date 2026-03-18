@@ -3,3 +3,6 @@ data/
 .env
 __pycache__/
 *.pyc
+NEXT_STEPS.md
+memory/
+review/

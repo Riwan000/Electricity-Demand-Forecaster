@@ -9,7 +9,7 @@ from typing import List, Dict, Optional
 from pathlib import Path
 
 
-def load_model_metadata(metadata_path: str = "model_metadata.json") -> Dict:
+def load_model_metadata(metadata_path: str = "artifacts/model_metadata.json") -> Dict:
     """
     Load model metadata from JSON file.
     
