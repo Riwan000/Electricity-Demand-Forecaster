@@ -78,6 +78,8 @@ def render_assistant_tab(model, metadata):
                 forecast_docs = build_forecast_summary_documents(forecast_summary)
                 if forecast_docs:
                     try:
+                        # Remove stale forecast docs from previous runs before adding new ones
+                        vector_store.remove_documents_by_type('forecast')
                         texts = [doc['text'] for doc in forecast_docs]
                         metadata_list = [doc['metadata'] for doc in forecast_docs]
                         embeddings = get_embeddings(texts)
@@ -176,7 +178,7 @@ def render_assistant_tab(model, metadata):
                             current_state=forecast_state,
                             forecast_horizon=forecast_horizon,
                             top_k=5,
-                            min_similarity=0.5
+                            min_similarity=0.3
                         )
 
                         st.markdown(response)

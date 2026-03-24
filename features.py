@@ -5,7 +5,6 @@ import pandas as pd
 import numpy as np
 import holidays
 
-from data_loading import load_historical_demand, calculate_state_30d_baseline
 
 
 def engineer_features(df, state_name, metadata=None):
@@ -111,18 +110,6 @@ def engineer_features(df, state_name, metadata=None):
     df['max.demand met during the day(mw)'] = 0.0
     df['state_share'] = 0.0
 
-    # state_30d_baseline — CRITICAL: Model expects this as a feature
-    historical_demand = load_historical_demand(state_name)
-    if historical_demand is not None and len(historical_demand) > 0:
-        df['state_30d_baseline'] = df['date'].apply(
-            lambda d: calculate_state_30d_baseline(historical_demand, d)
-        )
-        if df['state_30d_baseline'].isna().any():
-            mean_baseline = df['state_30d_baseline'].mean() if df['state_30d_baseline'].notna().any() else historical_demand['actual_demand_MU'].mean()
-            df['state_30d_baseline'] = df['state_30d_baseline'].fillna(mean_baseline)
-    else:
-        df['state_30d_baseline'] = 100.0
-
     # Temperature range
     df['temp_range'] = df['2m_temperature_max'] - df['2m_temperature_min']
     df['temp_range_heat'] = df['temp_range'] * df['extreme_heat_flag']
@@ -172,6 +159,10 @@ def prepare_features_for_prediction(weather_df, state_name, model=None, metadata
             df_features = pd.concat([df_features, dummies], axis=1)
 
     df_features = df_features.drop(columns=categorical_cols, errors='ignore')
+
+    # Restore season as a plain column so callers (e.g. weather_tab) can read it
+    if season_values is not None:
+        df_features['season'] = season_values.values
 
     expected_features_base = [
         '10m_u_component_of_wind_min', '10m_u_component_of_wind_mean', '10m_u_component_of_wind_max',

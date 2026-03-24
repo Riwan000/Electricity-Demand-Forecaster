@@ -165,6 +165,36 @@ class VectorStore:
                 self.metadata = data.get('metadata', [])
                 self.dimension = data.get('dimension', self.dimension)
     
+    def remove_documents_by_type(self, doc_type: str):
+        """
+        Remove all documents of a given metadata type and rebuild the index.
+
+        Parameters:
+            doc_type: Value of the 'type' key in metadata to remove (e.g. 'forecast')
+        """
+        # Filter out documents matching the given type
+        keep = [
+            (doc, meta)
+            for doc, meta in zip(self.documents, self.metadata)
+            if meta.get('type') != doc_type
+        ]
+
+        if not keep:
+            self.create_index()
+            return
+
+        kept_docs, kept_meta = zip(*keep)
+        self.documents = list(kept_docs)
+        self.metadata = list(kept_meta)
+
+        # Rebuild the FAISS index from scratch with kept documents
+        from utils.embeddings import get_embeddings
+        self.index = faiss.IndexFlatL2(self.dimension)
+        if self.documents:
+            embeddings = get_embeddings(self.documents).astype('float32')
+            faiss.normalize_L2(embeddings)
+            self.index.add(embeddings)
+
     def clear(self):
         """Clear all documents from the index."""
         self.create_index()

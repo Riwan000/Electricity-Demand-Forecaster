@@ -56,25 +56,24 @@ RESPONSE:"""
 def is_query_in_scope(query: str) -> bool:
     """
     Check if query is within scope of the assistant.
-    
+
     Parameters:
         query: User query string
-        
+
     Returns:
         True if query is in scope, False otherwise
     """
     query_lower = query.lower()
-    
-    # Scope keywords
-    in_scope_keywords = [
-        'forecast', 'demand', 'electricity', 'energy', 'weather', 'temperature',
-        'model', 'prediction', 'risk', 'confidence', 'rmse', 'mae', 'error',
-        'feature', 'importance', 'diagnostic', 'state', 'horizon', 'heat',
-        'holiday', 'cdd', 'cooling', 'peak', 'average'
+
+    # Hard out-of-scope topics
+    out_of_scope_keywords = [
+        'recipe', 'cook', 'movie', 'sport', 'game', 'music', 'celebrity',
+        'stock', 'crypto', 'bitcoin', 'joke', 'poem', 'write a story'
     ]
-    
-    # Check if query contains any in-scope keywords
-    return any(keyword in query_lower for keyword in in_scope_keywords)
+    if any(keyword in query_lower for keyword in out_of_scope_keywords):
+        return False
+
+    return True
 
 
 def call_openrouter_llm(messages: List[Dict], model: str = "nvidia/nemotron-3-super-120b-a12b:free") -> str:
@@ -151,7 +150,7 @@ class RAGEngine:
         current_state: Optional[str] = None,
         forecast_horizon: Optional[int] = None,
         top_k: int = 5,
-        min_similarity: float = 0.5,  # Lowered from 0.7 to allow more results
+        min_similarity: float = 0.3,  # Low threshold to tolerate typos in queries
         model: str = "nvidia/nemotron-3-super-120b-a12b:free"
     ) -> Tuple[str, List[Dict], float]:
         """
@@ -197,8 +196,9 @@ class RAGEngine:
         
         if not results:
             return (
-                "I don't have enough information to answer this question based on the available data. "
-                "Please try asking about forecasts, model performance, or weather impacts.",
+                "I don't have forecast data to answer this yet. "
+                "Please go to the **Demand Forecast** tab, run a forecast for your state and horizon, "
+                "then come back here to ask questions about it.",
                 [],
                 0.0
             )
