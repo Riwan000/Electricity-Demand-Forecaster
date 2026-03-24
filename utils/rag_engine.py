@@ -77,7 +77,7 @@ def is_query_in_scope(query: str) -> bool:
     return any(keyword in query_lower for keyword in in_scope_keywords)
 
 
-def call_openrouter_llm(messages: List[Dict], model: str = "openai/gpt-4o") -> str:
+def call_openrouter_llm(messages: List[Dict], model: str = "nvidia/nemotron-3-super-120b-a12b:free") -> str:
     """
     Call OpenRouter API for LLM completion.
     
@@ -152,7 +152,7 @@ class RAGEngine:
         forecast_horizon: Optional[int] = None,
         top_k: int = 5,
         min_similarity: float = 0.5,  # Lowered from 0.7 to allow more results
-        model: str = "xiaomi/mimo-v2-flash:free"
+        model: str = "nvidia/nemotron-3-super-120b-a12b:free"
     ) -> Tuple[str, List[Dict], float]:
         """
         Process a user query and generate a grounded response.
