@@ -18,7 +18,7 @@ class VectorStore:
         Initialize vector store.
         
         Parameters:
-            dimension: Embedding dimension (1536 for text-embedding-3-small)
+            dimension: Embedding dimension (384 for all-MiniLM-L6-v2, the default local model)
             index_path: Path to save/load FAISS index
         """
         self.dimension = dimension
@@ -26,7 +26,8 @@ class VectorStore:
         self.index = None
         self.documents = []  # Store original documents for retrieval
         self.metadata = []  # Store metadata for each document
-        
+        self._embeddings: List[np.ndarray] = []  # Cached post-normalization embeddings
+
         # Initialize or load index
         if index_path and os.path.exists(index_path):
             self.load_index()
@@ -39,6 +40,7 @@ class VectorStore:
         self.index = faiss.IndexFlatL2(self.dimension)
         self.documents = []
         self.metadata = []
+        self._embeddings = []
     
     def add_documents(self, embeddings: np.ndarray, documents: List[str], metadata: Optional[List[Dict]] = None):
         """
@@ -70,9 +72,10 @@ class VectorStore:
         
         # Add to index
         self.index.add(embeddings.astype('float32'))
-        
-        # Store documents and metadata
+
+        # Store documents, metadata, and cached embeddings (already normalized above)
         self.documents.extend(documents)
+        self._embeddings.extend([embeddings[i].copy() for i in range(len(embeddings))])
         if metadata:
             self.metadata.extend(metadata)
         else:
@@ -138,13 +141,14 @@ class VectorStore:
         # Save FAISS index
         faiss.write_index(self.index, self.index_path)
         
-        # Save documents and metadata
+        # Save documents, metadata, and cached embeddings
         data_path = self.index_path.replace('.index', '_data.pkl')
         with open(data_path, 'wb') as f:
             pickle.dump({
                 'documents': self.documents,
                 'metadata': self.metadata,
-                'dimension': self.dimension
+                'dimension': self.dimension,
+                'embeddings': self._embeddings,
             }, f)
     
     def load_index(self):
@@ -164,36 +168,47 @@ class VectorStore:
                 self.documents = data.get('documents', [])
                 self.metadata = data.get('metadata', [])
                 self.dimension = data.get('dimension', self.dimension)
+                # 'embeddings' key absent in indexes saved before this version;
+                # the fallback guard in remove_documents_by_type handles that case.
+                self._embeddings = data.get('embeddings', [])
     
     def remove_documents_by_type(self, doc_type: str):
         """
-        Remove all documents of a given metadata type and rebuild the index.
+        Remove all documents of a given metadata type and rebuild the index
+        using cached embeddings — no API calls required.
 
         Parameters:
             doc_type: Value of the 'type' key in metadata to remove (e.g. 'forecast')
         """
-        # Filter out documents matching the given type
-        keep = [
-            (doc, meta)
-            for doc, meta in zip(self.documents, self.metadata)
+        keep_indices = [
+            i for i, meta in enumerate(self.metadata)
             if meta.get('type') != doc_type
         ]
 
-        if not keep:
+        if not keep_indices:
             self.create_index()
             return
 
-        kept_docs, kept_meta = zip(*keep)
-        self.documents = list(kept_docs)
-        self.metadata = list(kept_meta)
+        # Guard: if _embeddings cache is out of sync (e.g. index loaded from disk
+        # before this version), fall back to re-embedding once to warm the cache.
+        if len(self._embeddings) != len(self.documents):
+            from utils.embeddings import get_embeddings as _ge
+            self.documents = [self.documents[i] for i in keep_indices]
+            self.metadata = [self.metadata[i] for i in keep_indices]
+            self.index = faiss.IndexFlatL2(self.dimension)
+            embs = _ge(self.documents).astype('float32')
+            faiss.normalize_L2(embs)
+            self.index.add(embs)
+            self._embeddings = [embs[i].copy() for i in range(len(embs))]
+            return
 
-        # Rebuild the FAISS index from scratch with kept documents
-        from utils.embeddings import get_embeddings
+        # Fast path: rebuild from cached embeddings — zero API calls
+        self.documents = [self.documents[i] for i in keep_indices]
+        self.metadata = [self.metadata[i] for i in keep_indices]
+        self._embeddings = [self._embeddings[i] for i in keep_indices]
         self.index = faiss.IndexFlatL2(self.dimension)
-        if self.documents:
-            embeddings = get_embeddings(self.documents).astype('float32')
-            faiss.normalize_L2(embeddings)
-            self.index.add(embeddings)
+        # Cached embeddings are already L2-normalized; add directly
+        self.index.add(np.stack(self._embeddings).astype('float32'))
 
     def clear(self):
         """Clear all documents from the index."""

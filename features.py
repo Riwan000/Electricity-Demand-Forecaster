@@ -4,6 +4,7 @@
 import pandas as pd
 import numpy as np
 import holidays
+from data_loading import get_state_historical_averages
 
 
 
@@ -89,7 +90,7 @@ def engineer_features(df, state_name, metadata=None):
     if metadata and 'extreme_heat_threshold_kelvin' in metadata:
         heat_threshold = metadata['extreme_heat_threshold_kelvin']
     else:
-        heat_threshold = df['2m_temperature_mean'].quantile(0.95) if len(df) > 0 else 305.0
+        heat_threshold = 305.0  # fixed historical threshold (train-derived)
     df['extreme_heat'] = (df['2m_temperature_mean'] > heat_threshold).astype(int)
     df['extreme_heat_flag'] = df['extreme_heat'].astype(int)
 
@@ -98,17 +99,20 @@ def engineer_features(df, state_name, metadata=None):
     df['temp_mean_heat_interaction'] = df['2m_temperature_mean'] * df['extreme_heat_flag']
     df['temp_max_heat_interaction'] = df['2m_temperature_max'] * df['extreme_heat_flag']
 
-    # Historical features (placeholders for forecasting)
+    # Historical features: use per-state averages where available; generation data
+    # is unavailable at inference time and stays at 0.0.
+    hist = get_state_historical_averages(state_name)
+    df['energymet_7d_avg'] = hist.get('energymet_7d_avg', 0.0)
+    df['monthly_energy_avg'] = hist.get('monthly_energy_avg', 0.0)
+    df['monthly_rolling_mean'] = hist.get('monthly_rolling_mean', 0.0)
+    df['demand_rolling'] = hist.get('demand_rolling', 0.0)
+    df['state_share'] = hist.get('state_share', 0.0)
+    df['max.demand met during the day(mw)'] = hist.get('max_demand_mw', 0.0)
+    # Generation features have no inference-time source — kept at 0.0
     df['generation_mu'] = 0.0
-    df['energymet_7d_avg'] = 0.0
     df['generation_7d_avg'] = 0.0
     df['monthly_generation_avg'] = 0.0
-    df['monthly_energy_avg'] = 0.0
-    df['monthly_rolling_mean'] = 0.0
-    df['demand_rolling'] = 0.0
     df['gen_rolling'] = 0.0
-    df['max.demand met during the day(mw)'] = 0.0
-    df['state_share'] = 0.0
 
     # Temperature range
     df['temp_range'] = df['2m_temperature_max'] - df['2m_temperature_min']

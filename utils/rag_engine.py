@@ -4,7 +4,7 @@ RAG query engine for processing user queries and generating grounded responses.
 
 import os
 import json
-from typing import List, Dict, Optional, Tuple
+from typing import Generator, List, Dict, Optional, Tuple
 import requests
 from utils.embeddings import get_embeddings, get_openrouter_api_key
 from utils.vector_store import VectorStore
@@ -102,10 +102,10 @@ def call_openrouter_llm(messages: List[Dict], model: str = "nvidia/nemotron-3-su
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/your-repo",
+        "HTTP-Referer": "https://electricity-demand-forecaster.streamlit.app",
         "X-Title": "Smart Energy Forecasting Platform"
     }
-    
+
     payload = {
         "model": model,
         "messages": messages,
@@ -128,6 +128,70 @@ def call_openrouter_llm(messages: List[Dict], model: str = "nvidia/nemotron-3-su
         raise ValueError(f"Failed to call OpenRouter API: {str(e)}")
     except (KeyError, ValueError) as e:
         raise ValueError(f"Error parsing LLM response: {str(e)}")
+
+
+def stream_openrouter_llm(
+    messages: List[Dict],
+    model: str = "nvidia/nemotron-3-super-120b-a12b:free"
+) -> Generator[str, None, None]:
+    """
+    Call OpenRouter API with SSE streaming, yielding text chunks as they arrive.
+
+    Parameters:
+        messages: List of message dicts with 'role' and 'content'
+        model: Model identifier for OpenRouter
+
+    Yields:
+        Text chunks from the streaming response
+
+    Raises:
+        ValueError: If API key is missing or the request fails before streaming begins
+    """
+    api_key = get_openrouter_api_key()
+    if not api_key:
+        raise ValueError(
+            "OPENROUTER_API_KEY not found in environment variables. "
+            "Please set it in your .env file or environment."
+        )
+
+    url = "https://openrouter.ai/api/v1/chat/completions"
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://electricity-demand-forecaster.streamlit.app",
+        "X-Title": "Smart Energy Forecasting Platform"
+    }
+
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 1000,
+        "stream": True,
+    }
+
+    try:
+        with requests.post(url, json=payload, headers=headers, timeout=60, stream=True) as resp:
+            resp.raise_for_status()
+            for raw_line in resp.iter_lines():
+                if not raw_line:
+                    continue
+                line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+                if not line.startswith("data:"):
+                    continue
+                data_str = line[len("data:"):].strip()
+                if data_str == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_str)
+                    text = chunk["choices"][0].get("delta", {}).get("content")
+                    if text:
+                        yield text
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    continue
+    except requests.exceptions.RequestException as e:
+        raise ValueError(f"Failed to stream from OpenRouter API: {str(e)}")
 
 
 class RAGEngine:
@@ -246,3 +310,102 @@ class RAGEngine:
             )
         
         return response, contexts, avg_similarity
+
+    def query_stream(
+        self,
+        user_query: str,
+        current_state: Optional[str] = None,
+        forecast_horizon: Optional[int] = None,
+        top_k: int = 5,
+        min_similarity: float = 0.3,
+        model: str = "nvidia/nemotron-3-super-120b-a12b:free",
+        chat_history: Optional[List[Dict]] = None,
+    ) -> Tuple[List[Dict], float, Generator[str, None, None]]:
+        """
+        Process a user query and return a streaming text generator.
+
+        Parameters:
+            user_query: User's question
+            current_state: Optional state name for context
+            forecast_horizon: Optional forecast horizon in days
+            top_k: Number of documents to retrieve
+            min_similarity: Minimum similarity threshold for retrieval
+            model: LLM model identifier for OpenRouter
+            chat_history: Previous turns as [{role, content}, ...].
+                          Pass st.session_state.chat_history[:-1] to exclude
+                          the current user message already appended to history.
+
+        Returns:
+            Tuple of (retrieved_contexts, avg_similarity, chunk_generator).
+            chunk_generator yields str chunks and must be consumed exactly once.
+        """
+        def _error_gen(msg: str) -> Generator[str, None, None]:
+            yield msg
+
+        if not is_query_in_scope(user_query):
+            return (
+                [],
+                0.0,
+                _error_gen(
+                    "I can only answer questions about electricity demand forecasts, "
+                    "weather impacts, model performance, and related topics. "
+                    "Please ask a question related to energy forecasting."
+                ),
+            )
+
+        try:
+            query_embedding = get_embeddings([user_query])[0]
+        except Exception as e:
+            return [], 0.0, _error_gen(f"Error processing query: {str(e)}")
+
+        results = self.vector_store.search(
+            query_embedding, k=top_k, min_similarity=min_similarity
+        )
+
+        if not results:
+            return (
+                [],
+                0.0,
+                _error_gen(
+                    "I don't have forecast data to answer this yet. "
+                    "Please go to the **Demand Forecast** tab, run a forecast for your "
+                    "state and horizon, then come back here to ask questions about it."
+                ),
+            )
+
+        contexts = []
+        similarities = []
+        for doc_text, similarity, metadata in results:
+            contexts.append({"text": doc_text, "similarity": similarity, "metadata": metadata})
+            similarities.append(similarity)
+
+        avg_similarity = sum(similarities) / len(similarities) if similarities else 0.0
+
+        context_text = "\n\n".join(
+            f"[Context {i+1}]: {ctx['text']}" for i, ctx in enumerate(contexts)
+        )
+
+        prompt = self.prompt_template.format(
+            retrieved_context=context_text,
+            current_state=current_state or "Not specified",
+            forecast_horizon=f"{forecast_horizon} days" if forecast_horizon else "Not specified",
+            user_query=user_query,
+        )
+
+        # Build messages: system + last 4 history turns + current prompt
+        messages: List[Dict] = [
+            {"role": "system", "content": "You are a helpful AI assistant for electricity demand forecasting."}
+        ]
+        if chat_history:
+            # Include up to 3 most recent turns
+            for turn in chat_history[-3:]:
+                if turn.get("role") in ("user", "assistant") and turn.get("content"):
+                    messages.append({"role": turn["role"], "content": turn["content"]})
+        messages.append({"role": "user", "content": prompt})
+
+        try:
+            chunk_gen = stream_openrouter_llm(messages, model=model)
+        except ValueError as e:
+            return contexts, avg_similarity, _error_gen(f"Error generating response: {str(e)}")
+
+        return contexts, avg_similarity, chunk_gen

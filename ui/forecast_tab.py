@@ -50,6 +50,14 @@ def render_forecast_tab(model, metadata, use_weather_api):
         st.write("")
         generate_btn = st.button("🚀 Generate Forecast", type="primary", use_container_width=True)
 
+    _EASTERN_REGION_STATES = {"Bihar", "Chhattisgarh", "Jharkhand", "Odisha", "West Bengal"}
+    if state in _EASTERN_REGION_STATES:
+        st.warning(
+            f"⚠️ **{state}** is in the Eastern Region (ER), which was not included as a "
+            "separate region in the model's training data. Forecasts for this state are "
+            "approximate. Accuracy will improve in a future model retrain."
+        )
+
     if generate_btn:
         if model is None:
             st.error("❌ Model not loaded. Cannot generate forecast.")
@@ -115,6 +123,14 @@ def render_forecast_tab(model, metadata, use_weather_api):
                          f"{results_df['forecasted_demand_MU'].min():.2f} - {results_df['forecasted_demand_MU'].max():.2f} MU")
 
                 st.success(f"✅ Forecast generated successfully for **{state}** ({horizon_days} days)")
+
+                if not st.session_state.get('generation_warning_shown'):
+                    st.info(
+                        "ℹ️ **Note on generation features**: Generation data (generation_mu, gen_rolling, etc.) "
+                        "is unavailable at inference time and is set to 0.0. Demand-based features use "
+                        "per-state historical averages. Forecast accuracy may be slightly reduced."
+                    )
+                    st.session_state['generation_warning_shown'] = True
 
                 # Summary metrics
                 st.subheader("📈 Forecast Summary")

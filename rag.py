@@ -117,20 +117,20 @@ def initialize_rag_system():
                     vector_store.add_documents(embeddings, texts, metadata_list)
                     vector_store.save_index()
                 except Exception as e:
-                    st.warning(f"Could not initialize embeddings: {str(e)}")
+                    print(f"[RAG] Could not initialize embeddings: {e}")
                     return None, None
 
             rag_engine = RAGEngine(vector_store)
             return vector_store, rag_engine
 
         except FileNotFoundError:
-            st.warning("Model metadata file not found. RAG system will work with forecast data only.")
+            print("[RAG] Model metadata file not found. RAG system will work with forecast data only.")
             rag_engine = RAGEngine(vector_store)
             return vector_store, rag_engine
         except Exception as e:
-            st.error(f"Error building knowledge base: {str(e)}")
+            print(f"[RAG] Error building knowledge base: {e}")
             return None, None
 
     except Exception as e:
-        st.error(f"Error initializing RAG system: {str(e)}")
+        print(f"[RAG] Error initializing RAG system: {e}")
         return None, None

@@ -65,6 +65,14 @@ def render_weather_tab(model, metadata, use_weather_api):
         st.write("")
         analyze_btn = st.button("🔍 Analyze Weather Impact", type="primary", use_container_width=True)
 
+    _EASTERN_REGION_STATES = {"Bihar", "Chhattisgarh", "Jharkhand", "Odisha", "West Bengal"}
+    if state_weather in _EASTERN_REGION_STATES:
+        st.warning(
+            f"⚠️ **{state_weather}** is in the Eastern Region (ER), which was not included as a "
+            "separate region in the model's training data. Forecasts for this state are "
+            "approximate. Accuracy will improve in a future model retrain."
+        )
+
     if analyze_btn:
         with st.spinner("🔄 Analyzing weather impact... This may take a few seconds."):
             try:
@@ -137,6 +145,14 @@ def render_weather_tab(model, metadata, use_weather_api):
                 }
 
                 st.success(f"✅ Weather impact analysis completed for **{state_weather}** ({analysis_mode})")
+
+                if not st.session_state.get('generation_warning_shown'):
+                    st.info(
+                        "ℹ️ **Note on generation features**: Generation data (generation_mu, gen_rolling, etc.) "
+                        "is unavailable at inference time and is set to 0.0. Demand-based features use "
+                        "per-state historical averages. Forecast accuracy may be slightly reduced."
+                    )
+                    st.session_state['generation_warning_shown'] = True
 
                 # Key Metrics
                 st.subheader("📈 Key Weather Metrics")

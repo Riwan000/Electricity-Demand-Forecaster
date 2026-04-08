@@ -133,15 +133,15 @@ def render_assistant_tab(model, metadata):
                             if 'type' in meta:
                                 st.caption(f"  Type: {meta['type']}")
 
-            if "confidence" in message:
-                confidence_pct = message["confidence"] * 100
-                confidence_text = f"Response confidence: {confidence_pct:.0f}% (based on data availability and forecast horizon)"
-                if confidence_pct >= 80:
-                    st.success(confidence_text)
-                elif confidence_pct >= 60:
-                    st.warning(confidence_text)
+            if "avg_similarity" in message:
+                similarity_pct = message["avg_similarity"] * 100
+                similarity_text = f"Retrieval similarity: {similarity_pct:.0f}% (average cosine similarity of retrieved sources)"
+                if similarity_pct >= 80:
+                    st.success(similarity_text)
+                elif similarity_pct >= 60:
+                    st.warning(similarity_text)
                 else:
-                    st.info(confidence_text)
+                    st.info(similarity_text)
 
     user_query = st.chat_input("Ask a question about forecasts, weather, or model performance...")
 
@@ -152,51 +152,47 @@ def render_assistant_tab(model, metadata):
             st.markdown(user_query)
 
         with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                if not rag_enabled or rag_engine is None:
-                    st.info("""
-                    **Limited Mode Active**
-
-                    The AI Assistant is running in limited mode because the knowledge base is unavailable.
-
-                    To answer your question properly, please:
-                    1. Ensure sentence-transformers is installed: `pip install sentence-transformers`
-                    2. Check that model_metadata.json exists
-                    3. Restart the application
-
-                    **Your question:** "{}"
-                    """.format(user_query))
-
+            if not rag_enabled or rag_engine is None:
+                limited_msg = (
+                    "**Limited Mode Active**\n\n"
+                    "The AI Assistant is running in limited mode because the knowledge base is unavailable.\n\n"
+                    "To answer your question properly, please:\n"
+                    "1. Ensure sentence-transformers is installed: `pip install sentence-transformers`\n"
+                    "2. Check that model_metadata.json exists\n"
+                    "3. Restart the application"
+                )
+                st.info(limited_msg)
+                st.session_state.chat_history.append({
+                    "role": "assistant",
+                    "content": "AI Assistant is in limited mode. Please check the setup instructions above."
+                })
+            else:
+                try:
+                    # Pass history excluding the current user message (already appended above)
+                    history_for_llm = st.session_state.chat_history[:-1]
+                    contexts, avg_similarity, chunk_gen = rag_engine.query_stream(
+                        user_query,
+                        current_state=forecast_state,
+                        forecast_horizon=forecast_horizon,
+                        top_k=5,
+                        min_similarity=0.3,
+                        chat_history=history_for_llm,
+                    )
+                    # Renders chunks live as they arrive; returns the full concatenated string
+                    response = st.write_stream(chunk_gen)
                     st.session_state.chat_history.append({
                         "role": "assistant",
-                        "content": "AI Assistant is in limited mode. Please check the setup instructions above."
+                        "content": response,
+                        "sources": contexts,
+                        "avg_similarity": avg_similarity,
                     })
-                else:
-                    try:
-                        response, contexts, avg_similarity = rag_engine.query(
-                            user_query,
-                            current_state=forecast_state,
-                            forecast_horizon=forecast_horizon,
-                            top_k=5,
-                            min_similarity=0.3
-                        )
-
-                        st.markdown(response)
-
-                        st.session_state.chat_history.append({
-                            "role": "assistant",
-                            "content": response,
-                            "sources": contexts,
-                            "confidence": avg_similarity
-                        })
-
-                    except Exception as e:
-                        error_msg = f"Error: {str(e)}"
-                        st.error(error_msg)
-                        st.session_state.chat_history.append({
-                            "role": "assistant",
-                            "content": error_msg
-                        })
+                except Exception as e:
+                    error_msg = f"Error: {str(e)}"
+                    st.error(error_msg)
+                    st.session_state.chat_history.append({
+                        "role": "assistant",
+                        "content": error_msg
+                    })
 
     if st.button("🗑️ Clear Chat"):
         st.session_state.chat_history = []

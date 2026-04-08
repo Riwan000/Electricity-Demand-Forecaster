@@ -194,7 +194,71 @@ def get_fallback_baseline(state_name):
         'Dadra and Nagar Haveli': 5.0, 'Daman and Diu': 5.0, 'Lakshadweep': 2.0,
         'Andaman and Nicobar': 5.0
     }
-    return fallback_baselines.get(state_name, 100.0)
+    baseline = fallback_baselines.get(state_name)
+    if baseline is None:
+        st.warning(f"⚠️ No fallback baseline defined for '{state_name}'. Using 100 MU — forecasts will be inaccurate.")
+        return 100.0
+    return baseline
+
+
+@st.cache_data
+def get_state_historical_averages(state_name: str) -> dict:
+    """
+    Compute per-state historical averages for inference-time feature imputation.
+    Uses daily_energy_met_MU.csv. Returns a dict of feature_name -> float.
+    Falls back to empty dict (callers use 0.0) if data is unavailable.
+    """
+    column_map = {
+        'Andaman and Nicobar': 'Andaman and Nicobar Islands',
+        'NCT of Delhi': 'Delhi',
+    }
+
+    possible_paths = [
+        'data/daily_energy_met_MU.csv',
+        '../data/daily_energy_met_MU.csv',
+        'data/14983362/daily_energy_met_MU.csv',
+        '../data/14983362/daily_energy_met_MU.csv',
+    ]
+
+    for file_path in possible_paths:
+        if not os.path.exists(file_path):
+            continue
+        try:
+            df = pd.read_csv(file_path)
+            date_col = 'Date' if 'Date' in df.columns else 'date'
+            df['_date'] = pd.to_datetime(df[date_col])
+
+            col = column_map.get(state_name, state_name)
+            if col not in df.columns or 'Total' not in df.columns:
+                continue
+
+            df['_state'] = pd.to_numeric(df[col], errors='coerce')
+            df['_total'] = pd.to_numeric(df['Total'], errors='coerce')
+            df = df.dropna(subset=['_state', '_total'])
+
+            if len(df) == 0:
+                continue
+
+            mean_daily_mu = df['_state'].mean()
+            energymet_7d_avg = df['_state'].rolling(7, min_periods=1).mean().mean()
+            monthly_energy_avg = df.groupby(df['_date'].dt.month)['_state'].mean().mean()
+            monthly_rolling_mean = df['_state'].rolling(30, min_periods=1).mean().mean()
+            demand_rolling = energymet_7d_avg
+            state_share = (df['_state'] / df['_total'].replace(0, np.nan)).mean()
+            max_demand_mw = mean_daily_mu * 1000 / (0.60 * 24)
+
+            return {
+                'energymet_7d_avg': float(energymet_7d_avg),
+                'monthly_energy_avg': float(monthly_energy_avg),
+                'monthly_rolling_mean': float(monthly_rolling_mean),
+                'demand_rolling': float(demand_rolling),
+                'state_share': float(state_share),
+                'max_demand_mw': float(max_demand_mw),
+            }
+        except Exception:
+            continue
+
+    return {}
 
 
 def calculate_state_30d_baseline(historical_demand, date):
@@ -247,6 +311,7 @@ def denormalize_predictions(predictions, dates, state_name, historical_demand=No
 
     if historical_demand is None or len(historical_demand) == 0:
         fallback_baseline = get_fallback_baseline(state_name)
+        st.caption(f"📌 Historical demand data unavailable for **{state_name}** — using reference baseline of {fallback_baseline:.0f} MU.")
         return predictions_processed * fallback_baseline
 
     if len(dates) > 0:
@@ -260,6 +325,7 @@ def denormalize_predictions(predictions, dates, state_name, historical_demand=No
                 baseline = historical_demand['actual_demand_MU'].mean()
             else:
                 fallback_baseline = get_fallback_baseline(state_name)
+                st.caption(f"📌 Historical demand data unavailable for **{state_name}** — using reference baseline of {fallback_baseline:.0f} MU.")
                 return predictions_processed * fallback_baseline
 
             return predictions_processed * baseline
@@ -272,4 +338,5 @@ def denormalize_predictions(predictions, dates, state_name, historical_demand=No
             return predictions_processed * baselines.values
     else:
         fallback_baseline = get_fallback_baseline(state_name)
+        st.caption(f"📌 Historical demand data unavailable for **{state_name}** — using reference baseline of {fallback_baseline:.0f} MU.")
         return predictions_processed * fallback_baseline

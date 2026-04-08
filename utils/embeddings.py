@@ -37,27 +37,14 @@ def _get_local_embedding_model():
 
 def get_embeddings(texts: List[str], model: str = "openai/text-embedding-3-small", use_local: bool = True) -> np.ndarray:
     """
-    Get embeddings for a list of texts using OpenRouter API.
-    
-    Parameters:
-        texts: List of text strings to embed
-        model: Model identifier for OpenRouter (default: OpenAI text-embedding-3-small)
-        
-    Returns:
-        numpy array of shape (n_texts, embedding_dim) with embeddings
-        
-    Raises:
-        ValueError: If API key is not set or API call fails
-    """
-    """
     Get embeddings for a list of texts.
-    
+
     Parameters:
         texts: List of text strings to embed
         model: Model identifier (for OpenRouter API, ignored for local)
         use_local: If True, use local sentence-transformers (default: True)
                    If False and API fails, will fallback to local anyway
-        
+
     Returns:
         numpy array of shape (n_texts, embedding_dim) with embeddings
     """
@@ -92,7 +79,7 @@ def get_embeddings(texts: List[str], model: str = "openai/text-embedding-3-small
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/your-repo",
+        "HTTP-Referer": "https://electricity-demand-forecaster.streamlit.app",
         "X-Title": "Smart Energy Forecasting Platform"
     }
     
