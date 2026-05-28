@@ -31,4 +31,4 @@ holidays>=0.34
 faiss-cpu>=1.7.4
 openai>=1.0.0
 python-dotenv>=1.0.0
-sentence-transformers>=2.2.0
+sentence-transformers>=5.5.1
