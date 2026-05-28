@@ -1,0 +1,60 @@
+name: Deploy
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'app.py'
+      - 'requirements.txt'
+      - 'features.py'
+      - 'weather.py'
+      - 'models.py'
+      - 'ui/**'
+      - 'utils/**'
+      - '.github/workflows/deploy.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r requirements-test.txt
+
+    - name: Run tests before deploy
+      run: |
+        pytest tests/ -v --tb=short
+
+    - name: Build Docker image
+      if: success()
+      run: |
+        docker build -t electricity-demand-forecaster:latest .
+
+    - name: Push to registry
+      if: success()
+      run: |
+        echo "Deploy step: push image to registry"
+        echo "This step depends on your deployment infrastructure"
+        echo "Common options: Docker Hub, ECR, GCR, Heroku, Streamlit Cloud"
+
+    - name: Deploy notification
+      if: always()
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const status = '${{ job.status }}';
+          const message = status === 'success'
+            ? '✅ Deployment successful'
+            : '❌ Deployment failed';
+          console.log(message);
