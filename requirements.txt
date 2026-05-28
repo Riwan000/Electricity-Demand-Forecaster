@@ -16,7 +16,7 @@ streamlit>=1.31.0
 plotly>=5.17.0
 
 # HTTP Requests (for Weather API)
-requests>=2.31.0
+requests>=2.34.2
 
 # Date/Time Utilities
 holidays>=0.34
