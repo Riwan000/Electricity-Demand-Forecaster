@@ -40,7 +40,10 @@ INSTRUCTIONS:
 5. If asked about forecasts, always mention the state, date range, and key metrics.
 6. Be concise but thorough in your responses.
 
-CONTEXT:
+ACTIVE FORECAST DATA (authoritative — use these exact numbers, do not recompute):
+{forecast_context}
+
+RETRIEVED KNOWLEDGE BASE CONTEXT:
 {retrieved_context}
 
 CURRENT CONTEXT:
@@ -51,6 +54,52 @@ USER QUESTION:
 {user_query}
 
 RESPONSE:"""
+
+
+def _format_forecast_context(forecast_summary: Optional[Dict]) -> str:
+    """
+    Serialize a forecast_summary dict into a concise text block for the prompt.
+
+    Returns an empty marker string when no forecast is available so the
+    {forecast_context} placeholder in the template is always filled.
+    """
+    if not forecast_summary:
+        return "No active forecast data."
+
+    state = forecast_summary.get('state', 'Unknown')
+    start = forecast_summary.get('start_date', '')
+    end = forecast_summary.get('end_date', '')
+    horizon = forecast_summary.get('horizon_days', '')
+    avg = forecast_summary.get('avg_demand', '')
+    peak = forecast_summary.get('peak_demand', '')
+    peak_date = forecast_summary.get('peak_date', '')
+    min_d = forecast_summary.get('min_demand', '')
+    rmse = forecast_summary.get('rmse', '')
+    confidence = forecast_summary.get('confidence_level', '')
+    high_risk_count = forecast_summary.get('high_risk_days_count', 0)
+    high_risk_dates = forecast_summary.get('high_risk_dates', [])
+    extreme_heat = forecast_summary.get('extreme_heat_dates', [])
+
+    lines = [
+        f"- State: {state}",
+        f"- Period: {start} to {end} ({horizon} days)",
+        f"- Average daily demand: {avg} MU",
+        f"- Peak demand: {peak} MU on {peak_date}",
+        f"- Minimum demand: {min_d} MU",
+    ]
+    if rmse:
+        lines.append(f"- Model RMSE: {rmse} MU")
+    if confidence:
+        lines.append(f"- Confidence level: {confidence}")
+    if high_risk_count:
+        dates_str = ', '.join(high_risk_dates) if high_risk_dates else 'none listed'
+        lines.append(f"- High-risk days: {high_risk_count} ({dates_str})")
+    else:
+        lines.append("- High-risk days: 0")
+    if extreme_heat:
+        lines.append(f"- Extreme heat dates: {', '.join(extreme_heat)}")
+
+    return '\n'.join(lines)
 
 
 def is_query_in_scope(query: str) -> bool:
@@ -76,7 +125,7 @@ def is_query_in_scope(query: str) -> bool:
     return True
 
 
-def call_openrouter_llm(messages: List[Dict], model: str = "nvidia/nemotron-3-super-120b-a12b:free") -> str:
+def call_openrouter_llm(messages: List[Dict], model: str = "nvidia/nemotron-nano-9b-v2:free") -> str:
     """
     Call OpenRouter API for LLM completion.
     
@@ -132,7 +181,7 @@ def call_openrouter_llm(messages: List[Dict], model: str = "nvidia/nemotron-3-su
 
 def stream_openrouter_llm(
     messages: List[Dict],
-    model: str = "nvidia/nemotron-3-super-120b-a12b:free"
+    model: str = "meta-llama/llama-3.1-8b-instruct:free"
 ) -> Generator[str, None, None]:
     """
     Call OpenRouter API with SSE streaming, yielding text chunks as they arrive.
@@ -194,9 +243,56 @@ def stream_openrouter_llm(
         raise ValueError(f"Failed to stream from OpenRouter API: {str(e)}")
 
 
+def initialize_rag_system() -> 'RAGEngine':
+    """Initialize and return a RAG engine instance."""
+    try:
+        vector_store = VectorStore()
+        return RAGEngine(vector_store)
+    except Exception as e:
+        raise ValueError(f"Failed to initialize RAG system: {str(e)}")
+
+
+def generate_forecast_summary(
+    state: str,
+    forecast_values: List[float],
+    query: str,
+    metadata: Optional[Dict] = None
+) -> str:
+    """
+    Generate a forecast summary response to a user query.
+
+    Parameters:
+        state: State name for context filtering
+        forecast_values: Predicted demand values
+        query: User question
+        metadata: Optional model metadata dict
+
+    Returns:
+        Response text from the RAG system
+    """
+    try:
+        rag = initialize_rag_system()
+        forecast_context = {
+            'state': state,
+            'avg_demand': sum(forecast_values) / len(forecast_values) if forecast_values else 0,
+            'peak_demand': max(forecast_values) if forecast_values else 0,
+            'min_demand': min(forecast_values) if forecast_values else 0,
+        }
+        response, _, _ = rag.query(
+            user_query=query,
+            current_state=state,
+            forecast_horizon=len(forecast_values),
+            forecast_context=forecast_context
+        )
+        return response
+    except Exception as e:
+        # Graceful error handling for tests
+        return f"Error generating forecast summary: {str(e)}"
+
+
 class RAGEngine:
     """RAG engine for processing queries and generating responses."""
-    
+
     def __init__(self, vector_store: VectorStore, prompt_template_path: str = "prompts/assistant.md"):
         """
         Initialize RAG engine.
@@ -213,21 +309,23 @@ class RAGEngine:
         user_query: str,
         current_state: Optional[str] = None,
         forecast_horizon: Optional[int] = None,
+        forecast_context: Optional[Dict] = None,
         top_k: int = 5,
         min_similarity: float = 0.3,  # Low threshold to tolerate typos in queries
-        model: str = "nvidia/nemotron-3-super-120b-a12b:free"
+        model: str = "meta-llama/llama-3.1-8b-instruct:free"
     ) -> Tuple[str, List[Dict], float]:
         """
         Process a user query and generate a grounded response.
-        
+
         Parameters:
             user_query: User's question
             current_state: Optional state name for context filtering
             forecast_horizon: Optional forecast horizon for context
+            forecast_context: Optional forecast_summary dict injected directly into prompt
             top_k: Number of documents to retrieve
             min_similarity: Minimum similarity threshold for retrieval
             model: LLM model identifier for OpenRouter
-            
+
         Returns:
             Tuple of (response_text, retrieved_contexts, avg_similarity)
         """
@@ -240,7 +338,7 @@ class RAGEngine:
                 [],
                 0.0
             )
-        
+
         # Embed query
         try:
             query_embedding = get_embeddings([user_query])[0]
@@ -250,14 +348,15 @@ class RAGEngine:
                 [],
                 0.0
             )
-        
-        # Search vector store
+
+        # Search vector store (filtered to current state + generic docs)
         results = self.vector_store.search(
             query_embedding,
             k=top_k,
-            min_similarity=min_similarity
+            min_similarity=min_similarity,
+            state_filter=current_state,
         )
-        
+
         if not results:
             return (
                 "I don't have forecast data to answer this yet. "
@@ -266,7 +365,7 @@ class RAGEngine:
                 [],
                 0.0
             )
-        
+
         # Extract contexts and metadata
         contexts = []
         similarities = []
@@ -277,29 +376,30 @@ class RAGEngine:
                 'metadata': metadata
             })
             similarities.append(similarity)
-        
+
         avg_similarity = sum(similarities) / len(similarities) if similarities else 0.0
-        
+
         # Build context string
         context_text = "\n\n".join([
-            f"[Context {i+1}]: {ctx['text']}" 
+            f"[Context {i+1}]: {ctx['text']}"
             for i, ctx in enumerate(contexts)
         ])
-        
+
         # Build prompt
         prompt = self.prompt_template.format(
+            forecast_context=_format_forecast_context(forecast_context),
             retrieved_context=context_text,
             current_state=current_state or "Not specified",
             forecast_horizon=f"{forecast_horizon} days" if forecast_horizon else "Not specified",
-            user_query=user_query
+            user_query=user_query,
         )
-        
+
         # Call LLM
         messages = [
             {"role": "system", "content": "You are a helpful AI assistant for electricity demand forecasting."},
             {"role": "user", "content": prompt}
         ]
-        
+
         try:
             response = call_openrouter_llm(messages, model=model)
         except Exception as e:
@@ -308,7 +408,7 @@ class RAGEngine:
                 contexts,
                 avg_similarity
             )
-        
+
         return response, contexts, avg_similarity
 
     def query_stream(
@@ -316,9 +416,10 @@ class RAGEngine:
         user_query: str,
         current_state: Optional[str] = None,
         forecast_horizon: Optional[int] = None,
+        forecast_context: Optional[Dict] = None,
         top_k: int = 5,
         min_similarity: float = 0.3,
-        model: str = "nvidia/nemotron-3-super-120b-a12b:free",
+        model: str = "meta-llama/llama-3.1-8b-instruct:free",
         chat_history: Optional[List[Dict]] = None,
     ) -> Tuple[List[Dict], float, Generator[str, None, None]]:
         """
@@ -328,6 +429,7 @@ class RAGEngine:
             user_query: User's question
             current_state: Optional state name for context
             forecast_horizon: Optional forecast horizon in days
+            forecast_context: Optional forecast_summary dict injected directly into prompt
             top_k: Number of documents to retrieve
             min_similarity: Minimum similarity threshold for retrieval
             model: LLM model identifier for OpenRouter
@@ -358,11 +460,13 @@ class RAGEngine:
         except Exception as e:
             return [], 0.0, _error_gen(f"Error processing query: {str(e)}")
 
+        # Search vector store (filtered to current state + generic docs)
         results = self.vector_store.search(
-            query_embedding, k=top_k, min_similarity=min_similarity
+            query_embedding, k=top_k, min_similarity=min_similarity,
+            state_filter=current_state,
         )
 
-        if not results:
+        if not results and forecast_context is None:
             return (
                 [],
                 0.0,
@@ -386,18 +490,18 @@ class RAGEngine:
         )
 
         prompt = self.prompt_template.format(
+            forecast_context=_format_forecast_context(forecast_context),
             retrieved_context=context_text,
             current_state=current_state or "Not specified",
             forecast_horizon=f"{forecast_horizon} days" if forecast_horizon else "Not specified",
             user_query=user_query,
         )
 
-        # Build messages: system + last 4 history turns + current prompt
+        # Build messages: system + last 3 history turns + current prompt
         messages: List[Dict] = [
             {"role": "system", "content": "You are a helpful AI assistant for electricity demand forecasting."}
         ]
         if chat_history:
-            # Include up to 3 most recent turns
             for turn in chat_history[-3:]:
                 if turn.get("role") in ("user", "assistant") and turn.get("content"):
                     messages.append({"role": turn["role"], "content": turn["content"]})

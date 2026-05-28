@@ -118,16 +118,16 @@ def engineer_features(df, state_name, metadata=None):
     df['temp_range'] = df['2m_temperature_max'] - df['2m_temperature_min']
     df['temp_range_heat'] = df['temp_range'] * df['extreme_heat_flag']
 
-    # Lag and rolling features (use current values as approximation for forecasting)
+    # Lag and rolling features (proper temporal shifts for forecasting)
     for lag in [1, 3, 7]:
-        df[f'temp_mean_lag{lag}'] = df['2m_temperature_mean']
+        df[f'temp_mean_lag{lag}'] = df['2m_temperature_mean'].shift(lag).bfill()
 
-    df['temp_mean_roll3'] = df['2m_temperature_mean']
-    df['temp_mean_roll7'] = df['2m_temperature_mean']
-    df['temp_max_roll3'] = df['2m_temperature_max']
-    df['temp_max_roll7'] = df['2m_temperature_max']
-    df['temp_min_roll3'] = df['2m_temperature_min']
-    df['temp_min_roll7'] = df['2m_temperature_min']
+    df['temp_mean_roll3'] = df['2m_temperature_mean'].rolling(window=3, min_periods=1).mean()
+    df['temp_mean_roll7'] = df['2m_temperature_mean'].rolling(window=7, min_periods=1).mean()
+    df['temp_max_roll3'] = df['2m_temperature_max'].rolling(window=3, min_periods=1).mean()
+    df['temp_max_roll7'] = df['2m_temperature_max'].rolling(window=7, min_periods=1).mean()
+    df['temp_min_roll3'] = df['2m_temperature_min'].rolling(window=3, min_periods=1).mean()
+    df['temp_min_roll7'] = df['2m_temperature_min'].rolling(window=7, min_periods=1).mean()
 
     return df
 

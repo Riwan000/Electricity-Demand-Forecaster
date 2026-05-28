@@ -32,7 +32,10 @@ CRITICAL RULES - MUST FOLLOW:
    - If asked about forecasts, always mention the state, date range, and key metrics
    - Be concise but thorough in your responses
 
-CONTEXT:
+ACTIVE FORECAST DATA (authoritative — use these exact numbers, do not recompute):
+{forecast_context}
+
+RETRIEVED KNOWLEDGE BASE CONTEXT:
 {retrieved_context}
 
 CURRENT CONTEXT:

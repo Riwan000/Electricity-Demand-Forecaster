@@ -50,7 +50,7 @@ def render_assistant_tab(model, metadata):
         st.session_state.chat_history = []
 
     # Get context from last forecast
-    forecast_context = None
+    forecast_summary = None
     forecast_state = None
     forecast_horizon = None
 
@@ -174,6 +174,7 @@ def render_assistant_tab(model, metadata):
                         user_query,
                         current_state=forecast_state,
                         forecast_horizon=forecast_horizon,
+                        forecast_context=forecast_summary,
                         top_k=5,
                         min_similarity=0.3,
                         chat_history=history_for_llm,

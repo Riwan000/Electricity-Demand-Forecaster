@@ -81,54 +81,64 @@ class VectorStore:
         else:
             self.metadata.extend([{}] * len(documents))
     
-    def search(self, query_embedding: np.ndarray, k: int = 5, min_similarity: float = 0.7) -> List[Tuple[str, float, Dict]]:
+    def search(
+        self,
+        query_embedding: np.ndarray,
+        k: int = 5,
+        min_similarity: float = 0.7,
+        state_filter: Optional[str] = None,
+    ) -> List[Tuple[str, float, Dict]]:
         """
         Search for similar documents.
-        
+
         Parameters:
             query_embedding: Query embedding vector of shape (dimension,)
             k: Number of results to return
             min_similarity: Minimum similarity score (0-1, converted from distance)
-            
+            state_filter: If provided, only return documents whose metadata 'state'
+                          matches this value OR have no 'state' key (generic docs).
+
         Returns:
             List of tuples: (document_text, similarity_score, metadata)
             Results are sorted by similarity (highest first)
         """
         if self.index is None or self.index.ntotal == 0:
             return []
-        
+
         if query_embedding.shape[0] != self.dimension:
             raise ValueError(
                 f"Query embedding dimension mismatch: expected {self.dimension}, "
                 f"got {query_embedding.shape[0]}"
             )
-        
+
         # Normalize query embedding
         query_embedding = query_embedding.reshape(1, -1).astype('float32')
         faiss.normalize_L2(query_embedding)
-        
-        # Search
-        distances, indices = self.index.search(query_embedding, min(k, self.index.ntotal))
-        
+
+        # Fetch more candidates than needed so filtering still yields k results
+        fetch_k = min(k * 4, self.index.ntotal) if state_filter else min(k, self.index.ntotal)
+        distances, indices = self.index.search(query_embedding, fetch_k)
+
         # Convert distances to similarity scores (1 - normalized distance)
         # For L2 normalized vectors, distance ranges from 0 to 2
         # Similarity = 1 - (distance / 2)
         similarities = 1 - (distances[0] / 2.0)
-        
-        # Filter by minimum similarity and format results
+
+        # Filter by minimum similarity, state, and format results
         results = []
         for idx, sim in zip(indices[0], similarities):
-            if sim >= min_similarity and idx < len(self.documents):
-                results.append((
-                    self.documents[idx],
-                    float(sim),
-                    self.metadata[idx]
-                ))
-        
-        # Sort by similarity (descending)
+            if sim < min_similarity or idx >= len(self.documents):
+                continue
+            meta = self.metadata[idx]
+            if state_filter is not None:
+                doc_state = meta.get('state')
+                if doc_state is not None and doc_state != state_filter:
+                    continue
+            results.append((self.documents[idx], float(sim), meta))
+
+        # Sort by similarity (descending) and cap at k
         results.sort(key=lambda x: x[1], reverse=True)
-        
-        return results
+        return results[:k]
     
     def save_index(self):
         """Save the FAISS index and associated data to disk."""

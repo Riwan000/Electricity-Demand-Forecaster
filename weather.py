@@ -129,9 +129,20 @@ def get_weather_forecast_openmeteo(state_name, start_date, num_days):
             forecast_df["total_cloud_cover_min"] = 0.0
             forecast_df["total_cloud_cover_max"] = 0.0
 
-        forecast_df["utci_mean"] = forecast_df["2m_temperature_mean"]
-        forecast_df["utci_min"] = forecast_df["2m_temperature_min"]
-        forecast_df["utci_max"] = forecast_df["2m_temperature_max"]
+        # UTCI approximation using Steadman heat index (accounts for humidity + wind chill)
+        # Full UTCI requires complex biometeorological model; this uses a simpler thermal index
+        def steadman_heat_index(t_celsius, rh_percent, wind_ms):
+            c1, c2, c3, c4, c5, c6, c7, c8, c9 = -42.379, 2.04901523, 10.14333127, -0.22475541, -0.00683783, -0.05481717, 0.00122874, 0.00085282, -0.00000199
+            t_fahrenheit = (t_celsius * 9/5) + 32
+            rh_squared = rh_percent * rh_percent
+            hi = c1 + c2*t_fahrenheit + c3*rh_percent + c4*t_fahrenheit*rh_percent + c5*t_fahrenheit**2 + c6*rh_percent**2 + c7*t_fahrenheit**2*rh_percent + c8*t_fahrenheit*rh_percent**2 + c9*t_fahrenheit**2*rh_percent**2
+            hi_celsius = (hi - 32) * 5/9
+            wind_chill_factor = 1.0 - (0.3 * wind_ms / 10.0)
+            return hi_celsius * wind_chill_factor
+
+        forecast_df["utci_mean"] = forecast_df.apply(lambda row: steadman_heat_index(row["2m_temperature_mean"], row.get("relative_humidity_2m_mean", 50), row.get("wind_speed_10m_mean", 3)), axis=1)
+        forecast_df["utci_min"] = forecast_df.apply(lambda row: steadman_heat_index(row["2m_temperature_min"], row.get("relative_humidity_2m_mean", 50), row.get("wind_speed_10m_min", 1)), axis=1)
+        forecast_df["utci_max"] = forecast_df.apply(lambda row: steadman_heat_index(row["2m_temperature_max"], row.get("relative_humidity_2m_mean", 50), row.get("wind_speed_10m_max", 5)), axis=1)
 
         return forecast_df
 
