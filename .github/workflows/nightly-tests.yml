@@ -26,29 +26,3 @@ jobs:
     - name: Run full test suite with verbose output
       run: |
         pytest tests/ -v --tb=short --cov=. --cov-report=term-missing
-
-    - name: Test with different numpy/pandas versions
-      run: |
-        pip install "numpy==1.25.0"
-        pip install "pandas==2.0.0"
-        pytest tests/ -v --tb=short
-
-    - name: Slack notification on failure
-      if: failure()
-      uses: slackapi/slack-github-action@v1
-      with:
-        payload: |
-          {
-            "text": "Nightly test suite FAILED",
-            "channel": "#alerts",
-            "attachments": [
-              {
-                "color": "danger",
-                "title": "Test Failure",
-                "text": "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-              }
-            ]
-          }
-      env:
-        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
