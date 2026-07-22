@@ -6,6 +6,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
+import time
 
 from config import ALL_STATES
 from data_loading import load_historical_data, load_historical_demand, denormalize_predictions
@@ -22,7 +23,7 @@ from visualization import (
 )
 
 
-def render_weather_tab(model, metadata, use_weather_api):
+def render_weather_tab(model, metadata, use_weather_api, health_monitor=None):
     """
     Render the Weather Impact Analysis tab UI.
 
@@ -75,6 +76,7 @@ def render_weather_tab(model, metadata, use_weather_api):
 
     if analyze_btn:
         with st.spinner("🔄 Analyzing weather impact... This may take a few seconds."):
+            analysis_start = time.time()
             try:
                 if analysis_mode == "Forecast Analysis":
                     if 'last_forecast' in st.session_state:
@@ -143,6 +145,15 @@ def render_weather_tab(model, metadata, use_weather_api):
                     'state': state_weather,
                     'mode': analysis_mode
                 }
+
+                # Log success metric
+                analysis_latency = time.time() - analysis_start
+                if health_monitor:
+                    health_monitor.log_metric(
+                        "weather_analysis_latency_seconds",
+                        analysis_latency,
+                        {"state": state_weather, "mode": analysis_mode}
+                    )
 
                 st.success(f"✅ Weather impact analysis completed for **{state_weather}** ({analysis_mode})")
 
@@ -292,8 +303,20 @@ def render_weather_tab(model, metadata, use_weather_api):
                     })
                     st.rerun()
                 else:
+                    if health_monitor:
+                        health_monitor.log_error(
+                            "weather_tab",
+                            str(e),
+                            {"state": state_weather, "mode": analysis_mode}
+                        )
                     st.error(f"❌ Error: {str(e)}")
             except Exception as e:
+                if health_monitor:
+                    health_monitor.log_error(
+                        "weather_tab",
+                        str(e),
+                        {"state": state_weather, "mode": analysis_mode}
+                    )
                 st.error(f"❌ Error analyzing weather impact: {str(e)}")
                 st.exception(e)
 

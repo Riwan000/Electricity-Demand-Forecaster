@@ -9,7 +9,7 @@ from utils.embeddings import get_embeddings, get_openrouter_api_key
 from utils.rag_builder import build_forecast_summary_documents
 
 
-def render_assistant_tab(model, metadata):
+def render_assistant_tab(model, metadata, health_monitor=None):
     """
     Render the AI Energy Assistant tab UI.
 
@@ -29,8 +29,10 @@ def render_assistant_tab(model, metadata):
         vector_store, rag_engine = initialize_rag_system()
         if vector_store is None or rag_engine is None:
             rag_enabled = False
-    except (FileNotFoundError, ImportError, Exception):
+    except (FileNotFoundError, ImportError, Exception) as e:
         rag_enabled = False
+        if health_monitor:
+            health_monitor.log_error("assistant_tab", f"RAG initialization failed: {str(e)}", {})
 
     if not rag_enabled or vector_store is None or rag_engine is None:
         st.warning("⚠️ AI Assistant is running in limited mode (knowledge base unavailable).")
@@ -87,6 +89,12 @@ def render_assistant_tab(model, metadata):
                         vector_store.save_index()
                         st.session_state['last_forecast_id'] = forecast_id
                     except Exception as e:
+                        if health_monitor:
+                            health_monitor.log_error(
+                                "assistant_tab",
+                                f"Failed to add forecast to knowledge base: {str(e)}",
+                                {"state": forecast_state}
+                            )
                         st.warning(f"Could not add forecast to knowledge base: {str(e)}")
 
     # Example questions

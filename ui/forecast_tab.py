@@ -6,6 +6,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
 from scipy import stats
+import time
 
 from config import ALL_STATES
 from data_loading import load_historical_demand, denormalize_predictions
@@ -15,7 +16,7 @@ from models import load_model_metadata, get_state_rmse
 from rag import generate_forecast_summary
 
 
-def render_forecast_tab(model, metadata, use_weather_api):
+def render_forecast_tab(model, metadata, use_weather_api, health_monitor=None):
     """
     Render the Forecast tab UI and handle forecast generation.
 
@@ -61,9 +62,12 @@ def render_forecast_tab(model, metadata, use_weather_api):
     if generate_btn:
         if model is None:
             st.error("❌ Model not loaded. Cannot generate forecast.")
+            if health_monitor:
+                health_monitor.log_error("forecast_tab", "Model not loaded", {"state": state})
             st.stop()
 
         with st.spinner("🔄 Generating forecast... This may take a few seconds."):
+            forecast_start = time.time()
             try:
                 start_date = datetime.now().date()
 
@@ -118,6 +122,15 @@ def render_forecast_tab(model, metadata, use_weather_api):
                 # Sanity check
                 assert results_df['forecasted_demand_MU'].mean() > 10, \
                     f"Forecast values look like model-space, not MU. Mean: {results_df['forecasted_demand_MU'].mean():.2f}"
+
+                # Log success metric
+                forecast_latency = time.time() - forecast_start
+                if health_monitor:
+                    health_monitor.log_metric(
+                        "forecast_latency_seconds",
+                        forecast_latency,
+                        {"state": state, "horizon_days": horizon_days}
+                    )
 
                 st.write("🔍 **Forecast range (MU):**",
                          f"{results_df['forecasted_demand_MU'].min():.2f} - {results_df['forecasted_demand_MU'].max():.2f} MU")
@@ -245,5 +258,12 @@ def render_forecast_tab(model, metadata, use_weather_api):
                     )
 
             except Exception as e:
+                # Log error
+                if health_monitor:
+                    health_monitor.log_error(
+                        "forecast_tab",
+                        str(e),
+                        {"state": state, "horizon_days": horizon_days}
+                    )
                 st.error(f"❌ Error generating forecast: {str(e)}")
                 st.exception(e)

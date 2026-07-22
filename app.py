@@ -31,6 +31,8 @@ st.set_page_config(
 
 from models import load_model, load_model_metadata
 from utils.embeddings import get_openrouter_api_key
+from utils.health_monitor import HealthMonitor
+from utils.health_checks import check_model, check_rag, check_api_key
 from ui.forecast_tab import render_forecast_tab
 from ui.weather_tab import render_weather_tab
 from ui.assistant_tab import render_assistant_tab
@@ -43,10 +45,41 @@ st.markdown("**Stage 1.5: Forecast + Explain**")
 st.markdown("Interactive dashboard for electricity demand forecasting using ML and real-time weather data")
 
 # ============================================================================
+# HEALTH CHECKS (Run once at startup)
+# ============================================================================
+if "health_monitor" not in st.session_state:
+    health_monitor = HealthMonitor()
+    st.session_state.health_monitor = health_monitor
+
+    model_ok, model_reason = check_model()
+    rag_ok, rag_reason = check_rag()
+    api_key_ok, api_key_reason = check_api_key()
+
+    health_monitor.set_model_status(model_ok)
+    health_monitor.set_rag_status(rag_ok)
+else:
+    health_monitor = st.session_state.health_monitor
+
+# ============================================================================
 # SIDEBAR
 # ============================================================================
 with st.sidebar:
     st.header("⚙️ Settings")
+    st.markdown("---")
+
+    # System Status (new in Phase 5)
+    st.subheader("🏥 System Status")
+    status = health_monitor.get_status_dict()
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write(f"{status['model']} Model")
+    with col2:
+        st.write(f"{status['rag']} RAG")
+
+    if status['last_error']:
+        st.warning(f"⚠️ Last Error:\n{status['last_error']}")
+
     st.markdown("---")
 
     model = load_model()
@@ -107,13 +140,13 @@ tab1, tab2, tab3 = st.tabs([
 ])
 
 with tab1:
-    render_forecast_tab(model, metadata, use_weather_api)
+    render_forecast_tab(model, metadata, use_weather_api, health_monitor)
 
 with tab2:
-    render_weather_tab(model, metadata, use_weather_api)
+    render_weather_tab(model, metadata, use_weather_api, health_monitor)
 
 with tab3:
-    render_assistant_tab(model, metadata)
+    render_assistant_tab(model, metadata, health_monitor)
 
 # ============================================================================
 # FOOTER
